@@ -1,0 +1,105 @@
+import re
+
+def translate(code):
+    replacements = [
+        # Visual bot / calibration (mostly in comments + docstrings + log messages)
+        ("Le point visuel est sur une autre fenêtre", "The visual point is on another window"),
+        ("Fenêtre liée", "Linked window"),
+        ("Si les deux coins existent mais sont inversés, on normalise immédiatement.", "If both corners exist but are reversed, normalize immediately."),
+        ("Calibre les zones de plaque avant le scan", "Calibrate the plate zones before scanning"),
+        ("Ouvre une", "Open a"),
+        ("Dépendance manquante", "Missing Dependency"),
+        ("pyautogui n'est pas installé. Lance INSTALL_DEPENDENCIES.bat puis redémarre.", "pyautogui is not installed. Run INSTALL_DEPENDENCIES.bat then restart."),
+        ("Calibration", "Calibration"),
+        ("Après OK tu as 3 secondes pour placer la souris sur", "After OK you have 3 seconds to place the mouse on"),
+        ("Place bien le curseur DANS la fenêtre WO", "Place the cursor INSIDE the WOS window"),
+        ("Impossible d'identifier la fenêtre sous le curseur.", "Cannot identify the window under the cursor."),
+        ("Le premier point lie la fenêtre. Les suivants doivent appartenir à la même fenêtre.", "The first point binds the window. Subsequent ones must belong to the same window."),
+        ("Le point est sur une autre fenêtre", "The point is on another window"),
+        ("Calibration WOS:", "WOS Calibration:"),
+        ("fenêtre=", "window="),
+        ("Calibration incomplète", "Incomplete Calibration"),
+        ("Calibre d'abord", "Calibrate first"),
+        ("Nouvelle calibration requise", "New Calibration Required"),
+        ("Cette version utilise une calibration relative à la fenêtre WOS. Refais les 5 point", "This version uses calibration relative to the WOS window. Redo the 5 point"),
+        ("Fenêtre WOS introuvable", "WOS Window Not Found"),
+        ("La fenêtre WOS liée à la calibration est introuvable. Ouvre WOS puis recalibre un point.", "The WOS window linked to calibration was not found. Open WOS then recalibrate a point."),
+        ("Fenêtre WOS minimisée", "WOS Window Minimized"),
+        ("Restaure la fenêtre WOS avant de lancer la navigation.", "Restore the WOS window before starting navigation."),
+        ("personnalisés. On passe donc par le presse-papiers Windows + Ctrl+V.", "custom. We go through the Windows clipboard + Ctrl+V."),
+        ("Le client PC WOS utilise des contrôles DirectX/custom qui peuvent ignorer", "The WOS PC client uses DirectX/custom controls that may ignore"),
+        ("sont injectés au niveau entrée Windows, comme un vrai clavier.", "are injected at the Windows input level, like a real keyboard."),
+        ("explicitement l'ancienne valeur avec 4 Backspace, puis on saisit les chiffres.", "explicitly the old value with 4 Backspace, then we type the digits."),
+        ("Retire le focus du champ avant validation : certains clients WOS", "Remove field focus before validation: some WOS clients"),
+        ("n'appliquent la valeur qu'après perte de focus.", "only apply the value after losing focus."),
+        ("Clique réellement la ville après le déplacement de carte.", "Actually click the city after the map move."),
+        ("Se déplacer aux X/Y ne force pas toujours le client à demander la fiche du", "Moving to X/Y doesn't always force the client to request the"),
+        ("joueur. Le clic sur la ville déclenche les réponses profil/ville dont le", "player's card. Clicking the city triggers the profile/city responses the"),
+        ("collecteur a besoin pour WOS ID et puissance.", "collector needs for WOS ID and power."),
+        ("Laisse le temps à la carte de recentrer et d'afficher la ville.", "Allow time for the map to recenter and display the city."),
+        ("On n'utilise plus de point de calibration de fermeture : cela évite", "We no longer use a close calibration point: this avoids"),
+        ("de cliquer accidentellement sur une autre ville selon la position de la carte.", "accidentally clicking another city depending on map position."),
+        ("Agent visuel V4.0.47 — lecture par zones calibrées.", "Visual agent V4.0.47 — reading by calibrated zones."),
+        ("Plus de crop global autour de la ville : pseudo, X/Y et puissance sont lus", "No more global crop around the city: name, X/Y and power are read"),
+        ("dans trois rectangles fixes calibrés relativement à la fenêtre WOS.", "in three fixed rectangles calibrated relative to the WOS window."),
+        ("Cela évite de confondre bâtiments, boutons ou autres textes de l'interface.", "This avoids confusing buildings, buttons or other interface text."),
+        ("zones visuelles uncalibrateds; aucune donnée visuelle promue.", "visual zones uncalibrated; no visual data promoted."),
+        ("On ne promeut une puissance visuelle que si l'identité ET la localisation", "We only promote a visual power if identity AND location"),
+        ("ont été confirmées dans leurs zones dédiées. store_vision_observation", "have been confirmed in their dedicated zones. store_vision_observation"),
+        ("applique cette règle et conserve la trace des lectures partielles.", "applies this rule and keeps a trace of partial readings."),
+        ("Test", "Test"),
+        ("Aucune coordonnée Atlas disponible.", "No Atlas coordinates available."),
+        ("Test navigation + ouverture/fermeture ville ->", "Navigation test + city open/close ->"),
+        ("Scan MAP", "MAP Scan"),
+        ("Aucun joueur correspondant avec coordonnées Atlas.", "No matching player with Atlas coordinates."),
+        ("Scan MAP automatique :", "Automatic MAP Scan:"),
+        ("position(s) à visiter. Déplace la souris dans le coin haut-gauche pour arrêt d'urgence PyAutoGUI.", "position(s) to visit. Move mouse to top-left corner for PyAutoGUI emergency stop."),
+        ("Terminé / arrêté —", "Finished / stopped —"),
+        ("compte(s) devenus complets", "account(s) now complete"),
+        ("Scan MAP terminé", "MAP Scan complete"),
+        ("Arrêt demandé…", "Stop requested..."),
+        ("Arrêt navigation PC demandé.", "PC navigation stop requested."),
+        ("VISION PROPRE", "CLEAN VISION"),
+        ("Créer une BASE VIERGE pour [", "Create a CLEAN DATABASE for ["),
+        ("] avec uniquement Atlas ID + pseudo + localisation, puis visiter", "] with only Atlas ID + name + location, then visit"),
+        ("[VISION PROPRE ", "[CLEAN VISION "),
+        ("terminé | complets", "done | complete"),
+        ("partiels", "partial"),
+        ("La base Clean Vision reste isolée de la base principale. Cette fenêtre est", "The Clean Vision database remains isolated from the main database. This window is"),
+        ("uniquement une vue SQL + outils de contrôle/export ; elle ne promeut rien.", "only an SQL view + control/export tools; it promotes nothing."),
+        ("Vision propre", "Clean Vision"),
+        ("Aucune base Vision propre créée.", "No Clean Vision database created."),
+        # Remaining in atlas worker
+        ("visités", "visited"),
+        ("revus", "reviewed"),
+        ("manquants", "missing"),
+        ("joueurs", "players"),
+        ("joueur", "player"),
+        ("depuis ton navi", "from your browser"),
+        ("État:", "State:"),
+        ("Fichiers:\\n-", "Files:\\n-"),
+        ("Blocks ancrés Atlas:", "Anchored Atlas Blocks:"),
+        ("IDENTITÉ (état actuel, pas un historique d'événements)", "IDENTITY (current state, not an event history)"),
+        ("Etat:", "State:"),
+        ("Log visible: utile même si le PCAP n'est pas transférable.", "Visible log: useful even if the PCAP is not transferable."),
+        ("Aucune reponse cible", "No target response"),
+        ("Correspondance cible par", "Target match by"),
+        ("Arrête d'abord la capture en cours avant de lancer un test carte.", "Stop the current capture before launching a map scan."),
+        ("Map Discovery : reste 5", "Map Discovery: stay still 5"),
+        ("10 s immobile, déplace la carte plusieurs fois, fais un zoom/dézoom, sans ouvrir ville/profil/alliance/class", "10 seconds, move the map several times, zoom in/out, without opening city/profile/alliance/ranking"),
+        ("complete: {len(uids)} joueurs", "complete: {len(uids)} players"),
+        ("Atlas État", "Atlas State"),
+    ]
+    for fr, en in replacements:
+        code = code.replace(fr, en)
+    return code
+
+for filepath in ["WOS_Unified_Manager_V4_0_49.py", "wos_collector_engine.py"]:
+    with open(filepath, "r", encoding="utf-8") as f:
+        code = f.read()
+    code = translate(code)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(code)
+    print(f"Pass 3 translated: {filepath}")
+
+print("Deep sweep pass 3 done.")

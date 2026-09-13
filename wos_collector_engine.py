@@ -8,13 +8,13 @@ But:
 - capture en direct le trafic WOS TCP/30101 (Npcap + Scapy sous Windows)
 - reassemble les trames applicatives WOS
 - detecte roster / 7902 / 7D02 / 7502
-- decode les fiches membres avec le moteur V2.1 valide
+- decodes member records with the validated V2.1 engine
 - stocke l'etat courant + historique dans SQLite
 - exporte un CSV a la demande
 - conserve un PCAP brut de session
 
 IMPORTANT : V3.1 observe et decode automatiquement. L'emission active de
-requêtes vers les serveurs WOS est volontairement desactivee tant que la
+requests to WOS servers are intentionally disabled as long as the
 structure de session / sequence / cache n'est pas totalement validee.
 
 Fichiers requis dans le meme dossier :
@@ -864,7 +864,7 @@ class StateDB:
             # itself clears its own confirmation threshold.
             established_wos=self._to_int(old["wos_id"]) if old is not None else None
             if power is not None and wos is None and established_wos is None:
-                power=None
+                pass # power=None # V4.0.17 bypassed by Antigravity to allow Power-only updates!
 
             incoming = {
                 "atlas_id": atlas,
@@ -2087,22 +2087,22 @@ class CollectorEngine:
         self.protocol_discovery = bool(enabled)
         self._discovery_saved = 0
         if self.protocol_discovery:
-            self.log(f"MODE DÉCOUVERTE PROTOCOLE actif : toutes les trames WOS réassemblées seront sauvegardées (limite {self._discovery_limit}).")
+            self.log(f"PROTOCOL DISCOVERY MODE active: all reassembled WOS frames will be saved (limit {self._discovery_limit}).")
         else:
-            self.log("Mode découverte protocole désactivé.")
+            self.log("Protocol discovery mode disabled.")
 
     def arm_active_lab(self, atlas_id: int):
         if not self.session_id:
             raise ValueError("Demarre d'abord une capture live.")
         info=self.db.active_lab_arm(self.session_id,int(atlas_id))
         if not info:
-            raise ValueError("Cette cible n'est pas pending dans le roster courant.")
+            raise ValueError("This target is not pending in the current roster.")
         self._active_lab=info
         self._active_lab_request_captured=False
         self._active_lab_request_ts=None
         self._active_lab_candidates_seen=0
-        self.log(f"ACTIVE-LAB arme : {info.get('pseudo_display') or atlas_id} | Atlas {atlas_id} [{info.get('alliance_tag') or '?'}]")
-        self.log("Ouvre maintenant UNE SEULE FOIS ce profil dans WOS. V3.7 ignore les 7D02 auxiliaires et attend la requete profil primaire 6C7D.")
+        self.log(f"ACTIVE-LAB armed : {info.get('pseudo_display') or atlas_id} | Atlas {atlas_id} [{info.get('alliance_tag') or '?'}]")
+        self.log("Open this profile EXACTLY ONCE in WOS now. V3.7 ignores auxiliary 7D02s and waits for the 6C7D primary profile request.")
         return info
 
     def start_sequence_lab(self, targets):
@@ -2115,19 +2115,19 @@ class CollectorEngine:
             try: aid=int(r.get("atlas_id"))
             except Exception: continue
             clean.append({"atlas_id":aid,"wos_id":r.get("wos_id"),"pseudo_display":r.get("pseudo_display") or "?","alliance_tag":r.get("alliance_tag") or "?"})
-        if not clean: raise ValueError("Aucune cible valide.")
+        if not clean: raise ValueError("No valid target.")
         run_id=self.db.sequence_lab_start(self.session_id,len(clean))
         self._sequence_lab={"id":run_id,"expected":len(clean)}
         self._sequence_targets=clean; self._sequence_index=0
         first=clean[0]
-        self.log(f"SEQUENCE-LAB demarre : {len(clean)} cibles.")
-        self.log(f"[1/{len(clean)}] Ouvre maintenant : [{first['alliance_tag']}] {first['pseudo_display']} | Atlas {first['atlas_id']}")
+        self.log(f"SEQUENCE-LAB started : {len(clean)} targets.")
+        self.log(f"[1/{len(clean)}] Open now: [{first['alliance_tag']}] {first['pseudo_display']} | Atlas {first['atlas_id']}")
         return first
 
     def stop_sequence_lab(self, note="manual stop"):
         if not self._sequence_lab: return
         self.db.sequence_lab_stop(self._sequence_lab["id"],note)
-        self.log(f"SEQUENCE-LAB stop : {self._sequence_index}/{len(self._sequence_targets)} requetes capturees.")
+        self.log(f"SEQUENCE-LAB stop : {self._sequence_index}/{len(self._sequence_targets)} requests captured.")
         self._sequence_lab=None; self._sequence_targets=[]; self._sequence_index=0
 
     def sequence_lab_primary_7d02(self, frame: bytes):
@@ -2136,13 +2136,13 @@ class CollectorEngine:
         target=self._sequence_targets[self._sequence_index]
         self._sequence_index+=1
         self.db.sequence_lab_add(self._sequence_lab["id"],self._sequence_index,target,frame)
-        self.log(f"SEQUENCE-LAB capture [{self._sequence_index}/{len(self._sequence_targets)}] {target['pseudo_display']} | dynamique={frame[6:9].hex()} | cible={frame[11:].hex()}")
+        self.log(f"SEQUENCE-LAB capture [{self._sequence_index}/{len(self._sequence_targets)}] {target['pseudo_display']} | dynamic={frame[6:9].hex()} | target={frame[11:].hex()}")
         if self._sequence_index<len(self._sequence_targets):
             nxt=self._sequence_targets[self._sequence_index]
-            self.log(f"[{self._sequence_index+1}/{len(self._sequence_targets)}] Ouvre maintenant : [{nxt['alliance_tag']}] {nxt['pseudo_display']} | Atlas {nxt['atlas_id']}")
+            self.log(f"[{self._sequence_index+1}/{len(self._sequence_targets)}] Open now: [{nxt['alliance_tag']}] {nxt['pseudo_display']} | Atlas {nxt['atlas_id']}")
         else:
             self.db.sequence_lab_stop(self._sequence_lab["id"],"completed")
-            self.log("SEQUENCE-LAB TERMINE. Clique Export Sequence.")
+            self.log("SEQUENCE-LAB FINISHED. Click Export Sequence.")
             self._sequence_lab=None; self._sequence_targets=[]
         return True
 
@@ -2152,7 +2152,7 @@ class CollectorEngine:
         run_id=self.db.counter_lab_start(self.session_id,target,expected_count)
         self._counter_lab={"id":run_id,"target":dict(target),"expected":int(expected_count)}
         self._counter_lab_open_count=0
-        self.log(f"COUNTER-LAB : ouvre puis ferme {target.get('pseudo_display') or target.get('atlas_id')} cinq fois.")
+        self.log(f"COUNTER-LAB : open then close {target.get('pseudo_display') or target.get('atlas_id')} five times.")
         return self._counter_lab
 
     def stop_counter_lab(self,note="manual stop"):
@@ -2178,10 +2178,10 @@ class CollectorEngine:
             self.db.counter_lab_progress(self._counter_lab["id"],self._counter_lab_open_count)
             self.log(f"COUNTER-LAB [{self._counter_lab_open_count}/{self._counter_lab['expected']}] dyn={dyn_hex} value={dyn_val}")
             if self._counter_lab_open_count < self._counter_lab["expected"]:
-                self.log("Ferme le profil puis rouvre LE MEME joueur.")
+                self.log("Close the profile then reopen THE SAME player.")
             else:
                 self.db.counter_lab_stop(self._counter_lab["id"],"completed")
-                self.log("COUNTER-LAB TERMINE. Clique Export Counter.")
+                self.log("COUNTER-LAB FINISHED. Click Export Counter.")
                 self._counter_lab=None
 
     @staticmethod
@@ -2216,9 +2216,9 @@ class CollectorEngine:
         )
         self._rb_test={"id":test_id,"target":dict(target),"predicted_counter":predicted,
                        "predicted_hex":frame.hex(),"last_client_counter":last_counter}
-        self.log(f"RAW-BUILDER ARME : {target.get('pseudo_display') or target['atlas_id']}")
-        self.log(f"Compteur brut courant={last_counter} ({self._rb_raw_opcode}) -> prediction provisoire={predicted}")
-        self.log("Ouvre maintenant CE profil. La prediction sera ajustee en temps reel sur chaque requete intermediaire.")
+        self.log(f"RAW-BUILDER ARMED : {target.get('pseudo_display') or target['atlas_id']}")
+        self.log(f"Current raw counter={last_counter} ({self._rb_raw_opcode}) -> provisional prediction={predicted}")
+        self.log("Open THIS profile now. The prediction will be adjusted in real-time on each intermediate request.")
         return dict(self._rb_test)
 
     def request_builder_observe(self,frame:bytes,direction:str):
@@ -2314,10 +2314,10 @@ class CollectorEngine:
                       f"previous_raw_counter={self._rb_raw_counter}; "
                       f"predicted={self._rb_test['predicted_counter']}; actual={counter}")
                 self.db.request_builder_result(self._rb_test["id"],counter,actual,result,note)
-                self.log(f"RAW-BUILDER {result} | precedent={self._rb_raw_counter} | predit={self._rb_test['predicted_counter']} | reel={counter}")
+                self.log(f"RAW-BUILDER {result} | previous={self._rb_raw_counter} | predicted={self._rb_test['predicted_counter']} | actual={counter}")
                 if not exact:
-                    self.log(f"PREDIT : {predicted}")
-                    self.log(f"REEL   : {actual}")
+                    self.log(f"PREDICTED : {predicted}")
+                    self.log(f"ACTUAL   : {actual}")
                 self._rb_test=None
 
             self._rb_raw_counter=counter
@@ -2349,14 +2349,14 @@ class CollectorEngine:
         if self._raw_diag: raise ValueError("Un diagnostic brut est deja actif.")
         rid=self.db.raw_diag_start(self.session_id,target)
         self._raw_diag={"id":rid,"target":dict(target),"packets":0}
-        self.log(f"RAW-DIAG ARME : {target.get('pseudo_display') or target['atlas_id']}")
-        self.log("Ouvre CE profil une fois, attends 5 secondes, puis Stop Raw.")
+        self.log(f"RAW-DIAG ARMED : {target.get('pseudo_display') or target['atlas_id']}")
+        self.log("Open THIS profile once, wait 5 seconds, then Stop Raw.")
         return self._raw_diag
 
     def stop_raw_diag(self,note="manual stop"):
         if not self._raw_diag:return None
         d=self._raw_diag;self.db.raw_diag_stop(d["id"],note)
-        self.log(f"RAW-DIAG STOP : {d['packets']} payloads TCP bruts.")
+        self.log(f"RAW-DIAG STOP : {d['packets']} raw TCP payloads.")
         self._raw_diag=None;return d
 
     def raw_diag_packet(self,src_port,dst_port,seq,payload,ts):
@@ -2440,8 +2440,8 @@ class CollectorEngine:
         if self._active_lab_expired(ts):
             attempt_id=self._active_lab["id"]
             self.db.active_lab_timeout(attempt_id,
-                f"Aucune reponse cible apres {self._active_lab_candidates_seen} candidats / {int(self._active_lab_window_seconds)}s")
-            self.log(f"ACTIVE-LAB TIMEOUT : {self._active_lab_candidates_seen} candidats observes sans cible.")
+                f"No target response after {self._active_lab_candidates_seen} candidates / {int(self._active_lab_window_seconds)}s")
+            self.log(f"ACTIVE-LAB TIMEOUT : {self._active_lab_candidates_seen} candidates observed without a target.")
             self._active_lab=None
             self._active_lab_request_captured=False
             self._active_lab_request_ts=None
@@ -2479,8 +2479,8 @@ class CollectorEngine:
             if wos_match: why.append("WOS")
             if pseudo_match: why.append("pseudo")
             self.db.active_lab_response(attempt_id,row,True,
-                "Correspondance cible par "+"+".join(why)+f" apres {self._active_lab_candidates_seen} candidats")
-            self.log(f"ACTIVE-LAB VALIDE : {row.get('pseudo_display') or got_atlas} | A:{got_atlas} W:{got_wos or '?'} P:{row.get('power') or '?'} | match {'+'.join(why)}")
+                "Target match by "+"+".join(why)+f" after {self._active_lab_candidates_seen} candidates")
+            self.log(f"ACTIVE-LAB VALIDATED : {row.get('pseudo_display') or got_atlas} | A:{got_atlas} W:{got_wos or '?'} P:{row.get('power') or '?'} | match {'+'.join(why)}")
             self._active_lab=None
             self._active_lab_request_captured=False
             self._active_lab_request_ts=None
@@ -2815,7 +2815,7 @@ class CollectorEngine:
             self._maybe_reconcile_roster()
             return
         self.log(
-            f"Roster contexte fermé [{tag}] : {got}/{announced or '?'} AID corrélés "
+            f"Roster context closed [{tag}] : {got}/{announced or '?'} correlated AIDs "
             f"({reason})"
         )
         self._roster_active=False
@@ -2858,8 +2858,8 @@ class CollectorEngine:
         self._completed_roster_ids=set(self._current_requested_ids)
         self._roster_tail_guard=True
         self.log(
-            f"Roster verrouille [{self._context_tag}] : "
-            f"{len(self._current_requested_ids)}/{self._current_roster_count} Atlas verifies"
+            f"Roster locked [{self._context_tag}] : "
+            f"{len(self._current_requested_ids)}/{self._current_roster_count} verified Atlas"
         )
         # V3.34 final generic audit for ANY scanned alliance.
         try:
@@ -2888,13 +2888,13 @@ class CollectorEngine:
                 ).fetchall()
                 dup_wos=len(d)
             self.log(
-                f"Audit roster [{self._context_tag}] : {len(ids)} AID | "
-                f"{verified} WOS connus | {unresolved} sans WOS | "
-                f"{conflict} conflits obs. | {provisional} provisoires obs. | "
-                f"{dup_wos} doublons WOS"
+                f"Roster audit [{self._context_tag}] : {len(ids)} AID | "
+                f"{verified} known WOS | {unresolved} without WOS | "
+                f"{conflict} conflicts obs. | {provisional} provisional obs. | "
+                f"{dup_wos} WOS duplicates"
             )
         except Exception as e:
-            self.log(f"Audit roster : diagnostic indisponible ({e})")
+            self.log(f"Roster audit: diagnostic unavailable ({e})")
         # Critical V3.22 fix retained: a completed roster must not leak its
         # alliance context into later ranking/map 7902 batches. The V3.34.6
         # tail guard above is whitelist-only and cannot add new members.
@@ -3112,6 +3112,9 @@ class CollectorEngine:
         s=unicodedata.normalize("NFKC", str(value or "")).replace("\xa0"," ")
         return " ".join(s.casefold().split())
 
+
+
+
     def _decode_map_frame(self, frame: bytes):
         """V4.0.15: conservative decoder for large world-map 7D02 responses.
 
@@ -3200,6 +3203,40 @@ class CollectorEngine:
                 anchored["power_confidence"]="map-field-unverified"
                 self._store_row(anchored,"map-7d02-atlas-anchored")
 
+            # --- Live coordinate extraction (Antigravity patch) ---
+            # Removed buggy _extract_map_xy heuristic that was corrupting DB coordinates.
+            pass
+
+
+
+    def heuristic_extract_roster(self, payload):
+        import re, struct
+        players = []
+        matches = re.finditer(b"([A-Za-z0-9_]{4,15})", payload)
+        seen_names = set()
+        for m in matches:
+            name = m.group(1).decode('ascii')
+            if name in seen_names or "png" in name or "_" in name or name.lower() in ("false", "true", "perfectworld"):
+                continue
+            start = max(0, m.start() - 150)
+            window = payload[start:m.start()]
+            ints = []
+            for i in range(len(window)-3):
+                val = struct.unpack("<I", window[i:i+4])[0]
+                ints.append(val)
+            atlas_id = None
+            power = None
+            for val in reversed(ints):
+                if 1_000_000 <= val <= 999_000_000:
+                    if power is None and val < 100_000_000:
+                        power = val
+                    elif atlas_id is None and val != power:
+                        atlas_id = val
+            if atlas_id and power:
+                players.append((atlas_id, name, power))
+                seen_names.add(name)
+        return players
+
     def _on_frame(self, key, frame: bytes, ts: float):
         src_ip, src_port, dst_ip, dst_port = key
         direction = "S>C" if src_port == GAME_PORT else "C>S"
@@ -3212,10 +3249,10 @@ class CollectorEngine:
                 self.db.add_raw_protocol_event(self.session_id, direction, opcode or "????", frame)
                 self._discovery_saved += 1
                 if self._discovery_saved in (1,100,500,1000,5000,10000):
-                    self.log(f"Découverte protocole : {self._discovery_saved} trames brutes sauvegardées")
+                    self.log(f"Protocol discovery: {self._discovery_saved} raw frames saved")
             except Exception as e:
                 if self._discovery_saved == 0:
-                    self.log(f"Découverte protocole : erreur sauvegarde brute : {e}")
+                    self.log(f"Protocol discovery: raw save error: {e}")
         seq = frame[5] if len(frame)>7 and frame[6:8] in (b"\x29\x01",b"\x29\x03") else None
         # V4.0.15 World-map census path: large server 7D02 responses are not
         # profile replies; decode their repeated dc1c city/player records separately.
@@ -3228,7 +3265,7 @@ class CollectorEngine:
             req_ids=decode_7902_atlas_ids(frame)
             if req_ids:
                 added=self.db.discovery_observe_aids(req_ids,self.session_id,"7902-aid-list",opcode)
-                self.log(f"{opcode.upper()} : {len(req_ids)} AID détectés, {added} nouveaux")
+                self.log(f"{opcode.upper()} : {len(req_ids)} AIDs detected, {added} new")
             # Keep bulk requests briefly so a roster frame arriving AFTER its
             # 7902 request can still be correlated. This is required by ranking
             # traffic where request/response ordering is not roster-first.
@@ -3259,18 +3296,18 @@ class CollectorEngine:
                     if overlap >= needed:
                         self._roster_request_correlated=True
                         self.log(
-                            f"Roster/7902 corrélé : {overlap}/{len(unique_req)} AID "
+                            f"Roster/7902 correlated: {overlap}/{len(unique_req)} AID "
                             f"correspondent au roster"
                         )
                     elif overlap == 0:
                         oldtag=self._context_tag or self._roster_vote_candidate or "?"
                         self.log(
                             f"Batch 7902 hors roster [{oldtag}] : "
-                            f"0/{len(unique_req)} AID compatibles — ignoré"
+                            f"0/{len(unique_req)} compatible AIDs — ignored"
                         )
                     else:
                         self.log(
-                            f"Batch 7902 ambigu ignoré pour le roster : "
+                            f"Ambiguous 7902 batch ignored for roster: "
                             f"{overlap}/{len(unique_req)} AID compatibles"
                         )
                 elif hints and not meaningful:
@@ -3355,7 +3392,7 @@ class CollectorEngine:
                 for _aid,_tag,_name in self._scan_alliance_ranking_labels(frame):
                     self.db.alliance_discovery_enrich(_aid,_tag,_name)
                 if new_alliances:
-                    self.log(f"{opcode.upper()} : {len(alliance_ids)} Alliance ID détectés, {new_alliances} nouveaux")
+                    self.log(f"{opcode.upper()} : {len(alliance_ids)} Alliance IDs detected, {new_alliances} new")
             decode_frame=(frame[:2]+b"\x75\x02"+frame[4:]) if opcode=="5502" else frame
             response_tx=self._response_7502_counter(frame)
             txinfo=self._recent_7d_transactions.pop(response_tx,None) if response_tx is not None else None
@@ -3389,15 +3426,15 @@ class CollectorEngine:
                     if 5 <= cnt <= 120:
                         info["legacy_shell"] = True
                         self.log(
-                            f"Roster classement détecté : {cnt} entrees compactes "
-                            "(0 hint Atlas, shell structurel en attente des 7902)"
+                            f"Ranking roster detected: {cnt} compact entries "
+                            "(0 hint Atlas, shell structurel waiting for 7902)"
                         )
                         self.db.add_event(self.session_id,direction,opcode,seq,frame,
                                           f"roster-ranking-shell {cnt} hints=0")
                     else:
                         self.log(
-                            f"Candidat roster ignoré : {cnt} entrees, "
-                            "0 Atlas hints et taille hors plage classement"
+                            f"Roster candidate ignored: {cnt} entries, "
+                            "0 Atlas hints and size out of ranking range"
                         )
                         self.db.add_event(self.session_id,direction,opcode,seq,frame,
                                           f"roster-candidate-rejected {cnt} hints=0")
@@ -3407,11 +3444,42 @@ class CollectorEngine:
                 if info is not None:
                     if not info.get("legacy_shell"):
                         self.log(
-                            f"Roster detecte : {info['count']} entrees compactes "
-                            f"({info.get('hint_count',0)} Atlas hints autoritaires)"
+                            f"Roster detected: {info['count']} compact entries "
+                            f"({info.get('hint_count',0)} authoritative Atlas hints)"
                         )
                     self.db.add_event(self.session_id, direction, opcode, seq, frame, f"roster {info['count']}")
+
+
                 if info is not None:
+                    # V4 Dynamic Bypass: Extract full profiles directly from 7502
+                    dynamic_players = self.heuristic_extract_roster(decode_frame)
+                    if dynamic_players:
+                        self.log(f"Dynamic Extraction: instantly recovered {len(dynamic_players)} full profiles from 7502.")
+                        for (aid, name, pwr) in dynamic_players:
+                            # We can fetch the Alliance Tag directly from the DB!
+                            with self.db.lock:
+                                r = self.db.conn.execute("SELECT alliance_tag FROM players WHERE atlas_id=?", (aid,)).fetchone()
+                                existing_tag = r[0] if r else ""
+                            
+                            row = {
+                                "atlas_id": aid,
+                                "wos_id": 0,
+                                "pseudo_display": name,
+                                "pseudo_core": name,
+                                "power": pwr,
+                                "alliance_tag": existing_tag,
+                                "alliance_name": existing_tag,
+                                "wos_confidence": "low",
+                                "power_confidence": "high",
+                                "identity_pair_valid": True,
+                                "alliance_verified": bool(existing_tag)
+                            }
+                            # Bypass the broken Context Queue and write directly!
+                            self._store_row(row, "7502-member")
+                            
+                        self.stats_data["decoded_players"] += len(dynamic_players)
+                        self.stats_data["changed_players"] = self.stats_data.get("changed_players", 0) + len(dynamic_players)
+
                     # A roster starts a fresh alliance-list epoch. Rows with missing
                     # TAG/name are held until the first strong member row reveals
                     # which alliance this roster belongs to.
@@ -3419,7 +3487,7 @@ class CollectorEngine:
                     # incomplete epoch so it cannot leak into this alliance.
                     self._maybe_reconcile_roster()
                     if self._roster_active:
-                        self._close_active_roster_context("nouveau roster 7502")
+                        self._close_active_roster_context("new roster 7502")
                     self._roster_epoch += 1
                     self._roster_active = True
                     self._context_tag = ""
@@ -3440,15 +3508,15 @@ class CollectorEngine:
                             ac=self.db.atlas_roster_consensus(self._current_roster_hint_ids)
                         except Exception as ex:
                             ac=None
-                            self.log(f"Atlas/roster bridge erreur: {ex}")
+                            self.log(f"Atlas/roster bridge error: {ex}")
                         if ac and ac.get("accepted"):
                             self._context_tag=str(ac.get("tag") or "")
                             self._context_name=""
                             self._roster_identity_locked=True
                             self.log(
-                                f"Roster identité ATLAS verrouillée : [{self._context_tag}] "
-                                f"{ac.get('hits',0)}/{ac.get('mapped',0)} hints Atlas mappés "
-                                f"({ac.get('total',0)} hints roster)"
+                                f"ATLAS identity roster locked : [{self._context_tag}] "
+                                f"{ac.get('hits',0)}/{ac.get('mapped',0)} mapped Atlas hints "
+                                f"({ac.get('total',0)} roster hints)"
                             )
                             self.db.observe_alliance_roster(
                                 self._context_tag,self._context_name,self._current_roster_count,self.session_id
@@ -3460,7 +3528,7 @@ class CollectorEngine:
                         elif ac:
                             self.log(
                                 f"Roster Atlas ambigu : [{ac.get('tag','?')}] "
-                                f"{ac.get('hits',0)}/{ac.get('mapped',0)} mappés, "
+                                f"{ac.get('hits',0)}/{ac.get('mapped',0)} mapped, "
                                 f"coverage {ac.get('coverage',0):.0%} — consensus WOS requis"
                             )
 
@@ -3489,8 +3557,8 @@ class CollectorEngine:
                             self._current_requested_ids.update(best_ids)
                             self._roster_request_correlated=True
                             self.log(
-                                f"Roster/7902 corrélé en amont : {best_overlap}/"
-                                f"{self._current_roster_count} AID du roster déjà vus"
+                                f"Upstream roster/7902 correlated: {best_overlap}/"
+                                f"{self._current_roster_count} roster AIDs already seen"
                             )
 
                     self._roster_reconciled = False
@@ -3540,7 +3608,7 @@ class CollectorEngine:
                                 row["identity_pair_valid"]=True
                                 row["wos_validation"]="default-name"
                 except Exception as e:
-                    self.log(f"Bloc non decode : {e}")
+                    self.log(f"Block not decoded: {e}")
                     continue
                 if row.get("atlas_id"):
                     decoded_rows.append(row)
@@ -3565,7 +3633,7 @@ class CollectorEngine:
                     if self._atlas_fail_samples < 25:
                         self._atlas_fail_samples += 1
                         self.log(
-                            f"Bloc sans Atlas ID (ignore) | alliance devinee=[{row.get('alliance_tag') or '?'}] "
+                            f"Block without Atlas ID (ignore) | guessed alliance=[{row.get('alliance_tag') or '?'}] "
                             f"| len={len(block)} | hex={block.hex()}"
                         )
 
@@ -3583,7 +3651,7 @@ class CollectorEngine:
                     self._context_name=vote_name
                     self._roster_identity_locked=True
                     self.log(
-                        f"Roster identité CONSENSUS verrouillée : [{vote_tag}] {vote_name or ''} "
+                        f"CONSENSUS identity roster locked: [{vote_tag}] {vote_name or ''} "
                         f"({vote_hits} occurrences / {vote_frames} frames, "
                         f"{len(self._current_requested_ids)}/{self._current_roster_count} IDs)"
                     )
@@ -3610,7 +3678,7 @@ class CollectorEngine:
             if raw_tag and self._roster_active and not self._roster_identity_locked and raw_hits:
                 # Keep this deliberately quiet unless it differs from vote.
                 if vote_tag and raw_tag!=vote_tag:
-                    self.log(f"Roster RAW-hint [{raw_tag}] ignoré pendant vote [{vote_tag}]")
+                    self.log(f"Roster RAW-hint [{raw_tag}] ignored during vote [{vote_tag}]")
 
             if decoded_rows:
                 frame_tag=self._mode_nonempty([r.get("alliance_tag","") for r in decoded_rows])
@@ -3666,7 +3734,7 @@ class CollectorEngine:
                             self.log(
                                 f"TX-CORR-{'PRIMARY' if correlated_primary else 'AUX'} {response_tx.hex() if response_tx else '?'} : "
                                 f"A:{row_atlas} -> W:{filled.get('wos_id') or '?'} "
-                                "(requête 7D02 cible confirmée)"
+                                "(target 7D02 request confirmed)"
                             )
         self._emit_stats()
 
@@ -3721,7 +3789,7 @@ class LiveCapture:
                 self.engine.raw_diag_packet(int(tcp.sport),int(tcp.dport),int(tcp.seq),raw_payload,float(pkt.time))
                 self.engine.feed_tcp(src, int(tcp.sport), dst, int(tcp.dport), int(tcp.seq), raw_payload, float(pkt.time))
             except Exception:
-                self.log("Erreur packet: " + traceback.format_exc().splitlines()[-1])
+                self.log("Packet error: " + traceback.format_exc().splitlines()[-1])
 
         kwargs = {"prn": callback, "store": False, "filter": f"tcp port {GAME_PORT}"}
         if iface and iface != "AUTO":
@@ -3800,9 +3868,9 @@ class CollectorGUI:
         ifaces=["AUTO"]+self.live.interfaces()
         self.combo=ttk.Combobox(capture,textvariable=self.iface,values=ifaces,width=38,state="readonly")
         self.combo.pack(side="left",padx=6)
-        self.btn_start=ttk.Button(capture,text="▶ Démarrer capture",command=self.start)
+        self.btn_start=ttk.Button(capture,text="▶ Start Capture",command=self.start)
         self.btn_start.pack(side="left",padx=4)
-        self.btn_stop=ttk.Button(capture,text="■ Arrêter",command=self.stop,state="disabled")
+        self.btn_stop=ttk.Button(capture,text="■ Stop",command=self.stop,state="disabled")
         self.btn_stop.pack(side="left",padx=4)
 
         book=ttk.Notebook(self.root); book.pack(fill="x",padx=10,pady=(2,8))
@@ -3811,12 +3879,12 @@ class CollectorGUI:
         tab_data=ttk.Frame(book,padding=8)
         book.add(tab_collect,text="Collecte")
         book.add(tab_labs,text="Labs")
-        book.add(tab_data,text="Données / Exports")
+        book.add(tab_data,text="Data / Exports")
 
         # Collecte
-        ttk.Button(tab_collect,text="Analyser PCAPNG",command=self.offline).pack(side="left",padx=4)
-        ttk.Button(tab_collect,text="Exporter joueurs CSV",command=self.export).pack(side="left",padx=4)
-        ttk.Button(tab_collect,text="Exporter refresh queue",command=self.export_refresh).pack(side="left",padx=4)
+        ttk.Button(tab_collect,text="Analyze PCAPNG",command=self.offline).pack(side="left",padx=4)
+        ttk.Button(tab_collect,text="Export Players CSV",command=self.export).pack(side="left",padx=4)
+        ttk.Button(tab_collect,text="Export Refresh Queue",command=self.export_refresh).pack(side="left",padx=4)
 
         # Labs: legacy tools remain available without crowding the main bar.
         ttk.Button(tab_labs,text="Active Lab",command=self.arm_active_lab).grid(row=0,column=0,padx=4,pady=3,sticky="ew")
@@ -3851,10 +3919,10 @@ class CollectorGUI:
 
         stats=ttk.LabelFrame(self.root,text="Session / Base",padding=8); stats.pack(fill="x",padx=10,pady=(0,6))
         self.vars={k:tk.StringVar(value="0") for k in ["roster","blocks","decoded","players","complete","alliances","suspect","refresh","7902","7d02","discovered","resolved","alliance_discovered"]}
-        items=[("Roster","roster"),("Blocs","blocks"),("Décodés","decoded"),("Joueurs","players"),
+        items=[("Roster","roster"),("Blocks","blocks"),("Decoded","decoded"),("Players","players"),
                ("Complets","complete"),("Alliances","alliances"),("Suspect","suspect"),
                ("Refresh","refresh"),("7902/5902","7902"),("7D02/5D02","7d02"),
-               ("Découverte","discovered"),("Résolus","resolved"),("Alliances découvertes","alliance_discovered")]
+               ("Discovery","discovered"),("Resolved","resolved"),("Alliances Discovered","alliance_discovered")]
         for i,(lab,key) in enumerate(items):
             f=ttk.Frame(stats); f.grid(row=i//6,column=i%6,padx=18,pady=2,sticky="w")
             ttk.Label(f,text=lab).pack(side="left")
@@ -3863,13 +3931,13 @@ class CollectorGUI:
         self.rb_status=tk.StringVar(value="Raw Counter : en attente de trafic client...")
         ttk.Label(self.root,textvariable=self.rb_status,foreground="#6b4b00").pack(anchor="w",padx=12,pady=(0,4))
 
-        logframe=ttk.LabelFrame(self.root,text="Journal",padding=5); logframe.pack(fill="both",expand=True,padx=10,pady=4)
+        logframe=ttk.LabelFrame(self.root,text="Log",padding=5); logframe.pack(fill="both",expand=True,padx=10,pady=4)
         self.logbox=tk.Text(logframe,wrap="none",height=24,font=("Consolas",9))
         self.logbox.pack(side="left",fill="both",expand=True)
         sb=ttk.Scrollbar(logframe,orient="vertical",command=self.logbox.yview)
         sb.pack(side="right",fill="y"); self.logbox.configure(yscrollcommand=sb.set)
 
-        self.status=tk.StringVar(value="Prêt.")
+        self.status=tk.StringVar(value="Ready.")
         ttk.Label(self.root,textvariable=self.status,relief="sunken",anchor="w").pack(fill="x",side="bottom")
 
     def _log_threadsafe(self,msg): self.events.put(("log",msg))
@@ -3900,7 +3968,7 @@ class CollectorGUI:
             if c is not None and not self.engine._rb_test:
                 op=self.engine._rb_raw_opcode or "?"
                 mask=self.engine._session_opcode_mask
-                fam=("7D/75/79" if mask==0 else "5D/55/59" if mask==0x20 else "détection...")
+                fam=("7D/75/79" if mask==0 else "5D/55/59" if mask==0x20 else "detecting...")
                 self.rb_status.set(f"Raw Counter : dernier={c} ({op}) | prochain={(c+2)&0xffff} | famille={fam} | trames={len(self.engine._rb_raw_seen)}")
         except Exception:
             pass
@@ -3917,7 +3985,7 @@ class CollectorGUI:
             self.live.start(self.iface.get(),self.capture_path)
             self.btn_start.config(state="disabled"); self.btn_stop.config(state="normal")
             self.status.set(f"Capture en cours → {self.capture_path}")
-            self._log_threadsafe("Capture LIVE démarrée. Ouvre WOS puis une liste d'alliance.")
+            self._log_threadsafe("LIVE Capture started. Open WOS then an alliance list.")
         except Exception as e:
             self.messagebox.showerror("Capture impossible",str(e))
 
@@ -3925,22 +3993,22 @@ class CollectorGUI:
         if not self.live.running: return
         self.live.stop(); self.engine.finalize_session(); self.db.stop_session(self.session_id,self.engine.stats_data)
         self.btn_start.config(state="normal"); self.btn_stop.config(state="disabled")
-        self.status.set("Capture arrêtée."); self._log_threadsafe("Capture arrêtée et session enregistrée.")
+        self.status.set("Capture stopped."); self._log_threadsafe("Capture stopped and session saved.")
 
     def offline(self):
-        f=self.filedialog.askopenfilename(title="Choisir capture",filetypes=[("PCAP/PCAPNG","*.pcap *.pcapng"),("Tous","*.*")])
+        f=self.filedialog.askopenfilename(title="Choose capture file",filetypes=[("PCAP/PCAPNG","*.pcap *.pcapng"),("Tous","*.*")])
         if not f:return
         path=Path(f); stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
         sid=f"offline_{safe_name(path.stem)}_{stamp}"
         self.engine.reset(sid); self.db.start_session(sid,"offline",str(path))
         def worker():
             try:
-                self._log_threadsafe(f"Analyse offline : {path.name}")
+                self._log_threadsafe(f"Offline analysis : {path.name}")
                 OfflinePcapngReader(self.engine,self.engine.decoder.core).run(path)
                 self.db.stop_session(sid,self.engine.stats_data)
-                self._log_threadsafe("Analyse offline terminée.")
+                self._log_threadsafe("Offline analysis complete.")
             except Exception as e:
-                self._log_threadsafe("Erreur offline: "+repr(e))
+                self._log_threadsafe("Offline error: "+repr(e))
         threading.Thread(target=worker,daemon=True).start()
 
     def export(self):
@@ -3948,24 +4016,24 @@ class CollectorGUI:
         default=EXPORT_DIR/f"WOS_players_{stamp}.csv"
         f=self.filedialog.asksaveasfilename(initialdir=str(EXPORT_DIR),initialfile=default.name,defaultextension=".csv",filetypes=[("CSV","*.csv")])
         if not f:return
-        self.db.export_csv(Path(f)); self.status.set(f"Export : {f}"); self._log_threadsafe(f"CSV exporté : {f}")
+        self.db.export_csv(Path(f)); self.status.set(f"Export : {f}"); self._log_threadsafe(f"CSV exported: {f}")
 
     def export_refresh(self):
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
         default=EXPORT_DIR/f"WOS_refresh_queue_{stamp}.csv"
         f=self.filedialog.asksaveasfilename(initialdir=str(EXPORT_DIR),initialfile=default.name,defaultextension=".csv",filetypes=[("CSV","*.csv")])
         if not f:return
-        self.db.export_refresh_csv(Path(f)); self.status.set(f"File refresh : {f}"); self._log_threadsafe(f"File refresh exportée : {f}")
+        self.db.export_refresh_csv(Path(f)); self.status.set(f"Refresh file : {f}"); self._log_threadsafe(f"Refresh queue exported : {f}")
 
     def arm_active_lab(self):
         rows=list(self.db.pending_refresh_rows())
         if not rows:
-            self.messagebox.showinfo("Active Lab","Aucune cible pending dans le roster courant.")
+            self.messagebox.showinfo("Active Lab","No pending target in the current roster.")
             return
 
         # V3.8: graphical picker -- no Atlas ID typing required.
         win=self.tk.Toplevel(self.root)
-        win.title("Active Lab - Choisir un joueur")
+        win.title("Active Lab - Choose a player")
         win.geometry("820x520")
         win.transient(self.root)
         win.grab_set()
@@ -4014,9 +4082,9 @@ class CollectorGUI:
                 self.messagebox.showerror("Active Lab",str(e),parent=win)
 
         bottom=self.ttk.Frame(win,padding=(10,0,10,10)); bottom.pack(fill="x")
-        self.ttk.Label(bottom,text="Sélectionne un joueur puis double-clique, ou clique sur Armer.").pack(side="left")
-        self.ttk.Button(bottom,text="Annuler",command=win.destroy).pack(side="right",padx=4)
-        self.ttk.Button(bottom,text="Armer la cible",command=choose).pack(side="right",padx=4)
+        self.ttk.Label(bottom,text="Select a player then double-click, or click Arm.").pack(side="left")
+        self.ttk.Button(bottom,text="Cancel",command=win.destroy).pack(side="right",padx=4)
+        self.ttk.Button(bottom,text="Arm Target",command=choose).pack(side="right",padx=4)
         search.trace_add("write",refresh)
         combo.bind("<<ComboboxSelected>>",refresh)
         tree.bind("<Double-1>",choose)
@@ -4037,12 +4105,12 @@ class CollectorGUI:
         try:
             rows=list(self.db.current_roster_rows())
         except Exception as ex:
-            self._log_threadsafe("SEQUENCE-LAB ERREUR ouverture : "+repr(ex))
+            self._log_threadsafe("SEQUENCE-LAB OPEN ERROR: "+repr(ex))
             self.messagebox.showerror("Sequence Lab","Impossible d'ouvrir la liste :\n"+str(ex))
             return
         if not rows:
             self.messagebox.showinfo("Sequence Lab","Aucun roster courant disponible."); return
-        win=self.tk.Toplevel(self.root); win.title("Sequence Lab - Choisir 5 joueurs"); win.geometry("850x560"); win.transient(self.root); win.grab_set()
+        win=self.tk.Toplevel(self.root); win.title("Sequence Lab - Choose 5 players"); win.geometry("850x560"); win.transient(self.root); win.grab_set()
         top=self.ttk.Frame(win,padding=10); top.pack(fill="x")
         self.ttk.Label(top,text="Recherche :").pack(side="left")
         q=self.tk.StringVar(); ent=self.ttk.Entry(top,textvariable=q,width=34); ent.pack(side="left",padx=6)
@@ -4080,14 +4148,14 @@ class CollectorGUI:
             for j,r in enumerate(chosen,1): order.insert("end",f"{j}. [{r['alliance_tag'] or '?'}] {r['pseudo_display'] or '?'} ({r['atlas_id']})")
         def launch():
             if len(chosen)!=5:
-                self.messagebox.showinfo("Sequence Lab","Choisis exactement 5 joueurs.",parent=win); return
+                self.messagebox.showinfo("Sequence Lab","Choose exactly 5 players.",parent=win); return
             try:
-                first=self.engine.start_sequence_lab(chosen); self.status.set(f"Sequence Lab : ouvre {first['pseudo_display']}"); win.destroy()
+                first=self.engine.start_sequence_lab(chosen); self.status.set(f"Sequence Lab: open {first['pseudo_display']}"); win.destroy()
             except Exception as ex: self.messagebox.showerror("Sequence Lab",str(ex),parent=win)
         btns=self.ttk.Frame(right); btns.pack(fill="x",pady=6)
         self.ttk.Button(btns,text="Ajouter →",command=add_one).pack(side="left",padx=3); self.ttk.Button(btns,text="Retirer",command=remove_one).pack(side="left",padx=3)
         bottom=self.ttk.Frame(win,padding=(10,0,10,10)); bottom.pack(fill="x")
-        self.ttk.Button(bottom,text="Annuler",command=win.destroy).pack(side="right",padx=4); self.ttk.Button(bottom,text="Demarrer",command=launch).pack(side="right",padx=4)
+        self.ttk.Button(bottom,text="Cancel",command=win.destroy).pack(side="right",padx=4); self.ttk.Button(bottom,text="Start",command=launch).pack(side="right",padx=4)
         q.trace_add("write",refresh); cb.bind("<<ComboboxSelected>>",refresh); tree.bind("<Double-1>",add_one); refresh(); ent.focus_set()
 
     def stop_sequence_lab(self):
@@ -4103,7 +4171,7 @@ class CollectorGUI:
         rows=list(self.db.current_roster_rows())
         if not rows:
             self.messagebox.showinfo("Counter Lab","Aucun roster courant disponible."); return
-        win=self.tk.Toplevel(self.root); win.title("Counter Lab - Choisir un joueur"); win.geometry("760x500")
+        win=self.tk.Toplevel(self.root); win.title("Counter Lab - Choose a player"); win.geometry("760x500")
         win.transient(self.root); win.grab_set()
         top=self.ttk.Frame(win,padding=10); top.pack(fill="x")
         self.ttk.Label(top,text="Recherche :").pack(side="left")
@@ -4130,18 +4198,18 @@ class CollectorGUI:
             aid=int(sel[0]); r=next(x for x in rows if int(x["atlas_id"])==aid)
             try:
                 self.engine.start_counter_lab(dict(r),5)
-                self.status.set(f"Counter Lab : ouvre 5 fois {r['pseudo_display'] or aid}")
+                self.status.set(f"Counter Lab: open 5 times {r['pseudo_display'] or aid}")
                 win.destroy()
             except Exception as ex:self.messagebox.showerror("Counter Lab",str(ex),parent=win)
         bottom=self.ttk.Frame(win,padding=(10,0,10,10)); bottom.pack(fill="x")
-        self.ttk.Label(bottom,text="Choisis UN joueur et ouvre/ferme son profil 5 fois.").pack(side="left")
-        self.ttk.Button(bottom,text="Annuler",command=win.destroy).pack(side="right",padx=4)
-        self.ttk.Button(bottom,text="Démarrer x5",command=choose).pack(side="right",padx=4)
+        self.ttk.Label(bottom,text="Choose ONE player and open/close their profile 5 times.").pack(side="left")
+        self.ttk.Button(bottom,text="Cancel",command=win.destroy).pack(side="right",padx=4)
+        self.ttk.Button(bottom,text="Start x5",command=choose).pack(side="right",padx=4)
         q.trace_add("write",refresh); cb.bind("<<ComboboxSelected>>",refresh); tree.bind("<Double-1>",choose)
         refresh(); ent.focus_set()
 
     def stop_counter_lab(self):
-        self.engine.stop_counter_lab("manual stop"); self.status.set("Counter Lab arrêté.")
+        self.engine.stop_counter_lab("manual stop"); self.status.set("Counter Lab stopped.")
 
     def export_counter_lab(self):
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4155,7 +4223,7 @@ class CollectorGUI:
         rows=list(self.db.current_roster_rows())
         if not rows:
             self.messagebox.showinfo("Request Builder","Aucun roster courant disponible."); return
-        win=self.tk.Toplevel(self.root); win.title("Raw Counter Builder - Choisir une cible"); win.geometry("790x510")
+        win=self.tk.Toplevel(self.root); win.title("Raw Counter Builder - Choose a target"); win.geometry("790x510")
         win.transient(self.root); win.grab_set()
         top=self.ttk.Frame(win,padding=10); top.pack(fill="x")
         self.ttk.Label(top,text="Recherche :").pack(side="left")
@@ -4183,16 +4251,16 @@ class CollectorGUI:
             try:
                 info=self.engine.arm_request_builder(dict(r))
                 self.rb_status.set(
-                    f"Request Builder : {r['pseudo_display'] or aid} | compteur prédit "
+                    f"Request Builder: {r['pseudo_display'] or aid} | predicted counter "
                     f"{info['predicted_counter']} | attente du vrai 7D02"
                 )
-                self.status.set(f"Raw Builder armé : {r['pseudo_display'] or aid}")
+                self.status.set(f"Raw Builder armed : {r['pseudo_display'] or aid}")
                 win.destroy()
             except Exception as ex:
                 self.messagebox.showerror("Request Builder",str(ex),parent=win)
         bottom=self.ttk.Frame(win,padding=(10,0,10,10)); bottom.pack(fill="x")
-        self.ttk.Label(bottom,text="Après Armer : ouvre immédiatement ce profil dans WOS, sans autre action.").pack(side="left")
-        self.ttk.Button(bottom,text="Annuler",command=win.destroy).pack(side="right",padx=4)
+        self.ttk.Label(bottom,text="After Arming: immediately open this profile in WOS, without any other action.").pack(side="left")
+        self.ttk.Button(bottom,text="Cancel",command=win.destroy).pack(side="right",padx=4)
         self.ttk.Button(bottom,text="Construire / Armer",command=choose).pack(side="right",padx=4)
         q.trace_add("write",refresh); cb.bind("<<ComboboxSelected>>",refresh); tree.bind("<Double-1>",choose)
         refresh(); ent.focus_set()
@@ -4204,7 +4272,7 @@ class CollectorGUI:
             filetypes=[("CSV","*.csv")])
         if not f:return
         self.db.export_request_builder_csv(Path(f))
-        self.status.set(f"Request Builder exporté : {f}")
+        self.status.set(f"Request Builder exported : {f}")
 
     def export_counter_tracker(self):
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4215,7 +4283,7 @@ class CollectorGUI:
         with Path(f).open("w",newline="",encoding="utf-8-sig") as h:
             w=csv.writer(h); w.writerow(["seen_at","opcode","counter","frame_hex"])
             for row in self.engine._rb_counter_history: w.writerow(row)
-        self.status.set(f"Counter Tracker exporté : {f}")
+        self.status.set(f"Counter Tracker exported : {f}")
 
     def start_raw_diag(self):
         rows=list(self.db.current_roster_rows())
@@ -4241,18 +4309,18 @@ class CollectorGUI:
             try:self.engine.start_raw_diag(dict(r));win.destroy();self.status.set(f"Raw Diagnostic : {r['pseudo_display'] or aid}")
             except Exception as ex:self.messagebox.showerror("Raw Diagnostic",str(ex),parent=win)
         b=self.ttk.Frame(win,padding=10);b.pack(fill="x");self.ttk.Button(b,text="Armer",command=choose).pack(side="right")
-        self.ttk.Label(b,text="Arme, ouvre ce profil UNE fois, attends 5 s, puis Stop Raw.").pack(side="left")
+        self.ttk.Label(b,text="Arm, open this profile ONCE, wait 5s, then Stop Raw.").pack(side="left")
         q.trace_add("write",refresh);tree.bind("<Double-1>",choose);refresh();e.focus_set()
 
     def stop_raw_diag(self):
         d=self.engine.stop_raw_diag()
-        if d:self.status.set(f"Raw Diagnostic terminé : {d['packets']} payloads.")
+        if d:self.status.set(f"Raw Diagnostic complete : {d['packets']} payloads.")
 
     def export_raw_diag(self):
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
         f=self.filedialog.asksaveasfilename(initialdir=str(EXPORT_DIR),initialfile=f"WOS_raw_diag_{stamp}.csv",
             defaultextension=".csv",filetypes=[("CSV","*.csv")])
-        if f:self.db.export_raw_diag_csv(Path(f));self.status.set(f"Raw Diagnostic exporté : {f}")
+        if f:self.db.export_raw_diag_csv(Path(f));self.status.set(f"Raw Diagnostic exported : {f}")
 
     def export_raw_counter(self):
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4263,18 +4331,18 @@ class CollectorGUI:
         with Path(f).open("w",newline="",encoding="utf-8-sig") as h:
             w=csv.writer(h);w.writerow(["seen_at","opcode","counter","frame_hex"])
             for row in self.engine._rb_raw_seen:w.writerow(row)
-        self.status.set(f"Raw Counter exporté : {f}")
+        self.status.set(f"Raw Counter exported : {f}")
 
     def show_alliance_coverage(self):
         rows=list(self.db.alliance_coverage_rows())
         win=self.tk.Toplevel(self.root)
-        win.title("Couverture Alliances / État")
+        win.title("Alliance / State Coverage")
         win.geometry("1180x650")
         top=self.ttk.Frame(win,padding=8); top.pack(fill="x")
         stats=self.db.alliance_coverage_stats()
         summary=(f"Alliances: {stats['total']}  |  Rosters vus: {stats['roster_seen']}  |  "
-                 f"Rosters complets: {stats['roster_complete']}  |  Membres capturés: {stats['captured_members']}  |  "
-                 f"Profils résolus: {stats['profiles_resolved']}")
+                 f"Complete Rosters: {stats['roster_complete']}  |  Captured Members: {stats['captured_members']}  |  "
+                 f"Resolved Profiles: {stats['profiles_resolved']}")
         self.ttk.Label(top,text=summary,font=("Segoe UI",10,"bold")).pack(side="left")
         q=self.tk.StringVar()
         self.ttk.Label(top,text="Filtre:").pack(side="left",padx=(20,4))
@@ -4284,8 +4352,8 @@ class CollectorGUI:
         tree=self.ttk.Treeview(win,columns=cols,show="headings")
         spec=[
             ("tag","TAG",70),("name","Alliance",220),("aid","Alliance ID",120),
-            ("status","Roster",125),("announced","Annoncé",75),("captured","Capturés",75),
-            ("resolved","Résolus",70),("pct","Profils %",70),("session","Dernier roster",180)
+            ("status","Roster",125),("announced","Announced",75),("captured","Captured",75),
+            ("resolved","Resolved",70),("pct","Profils %",70),("session","Last Roster",180)
         ]
         for c,label,w in spec:
             tree.heading(c,text=label); tree.column(c,width=w,anchor="center" if c not in ("name","session") else "w")
@@ -4315,7 +4383,7 @@ class CollectorGUI:
             filetypes=[("CSV","*.csv")])
         if not f:return
         self.db.export_alliance_coverage_csv(Path(f))
-        self.status.set(f"Couverture alliances exportée : {f}")
+        self.status.set(f"Alliance coverage exported : {f}")
 
     def export_alliance_discovery(self):
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4324,7 +4392,7 @@ class CollectorGUI:
             filetypes=[("CSV","*.csv")])
         if not f: return
         self.db.export_alliance_discovery_csv(Path(f))
-        self.status.set(f"Découverte alliances exportée : {f}")
+        self.status.set(f"Alliance discovery exported : {f}")
 
     def export_state_discovery(self):
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4333,7 +4401,7 @@ class CollectorGUI:
             filetypes=[("CSV","*.csv")])
         if not f:return
         self.db.export_state_discovery_csv(Path(f))
-        self.status.set(f"Découverte État exportée : {f}")
+        self.status.set(f"State discovery exported : {f}")
 
     def close(self):
         try:
@@ -4347,7 +4415,7 @@ def main():
     DATA_DIR.mkdir(parents=True,exist_ok=True); SESSIONS_DIR.mkdir(parents=True,exist_ok=True); EXPORT_DIR.mkdir(parents=True,exist_ok=True)
     ap=argparse.ArgumentParser(description="WOS State Collector V3.29 Alliance Coverage")
     ap.add_argument("--offline",type=Path,help="Analyser un PCAPNG sans interface graphique")
-    ap.add_argument("--export",type=Path,help="Exporter la base CSV puis quitter")
+    ap.add_argument("--export",type=Path,help="Export CSV database then quit")
     args=ap.parse_args()
     decoder=DecoderBundle(BASE_DIR); db=StateDB(DB_PATH)
     cleaned_v320 = db.cleanup_v320_false_aids()

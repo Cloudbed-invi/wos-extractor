@@ -293,10 +293,9 @@ class UnifiedDB(core.StateDB):
         lok=1 if data.get('location_ok') else 0
         pwr=self._to_int(data.get('power'))
         power_ok=1 if pwr is not None and 10_000_000 <= pwr <= 550_000_000 else 0
-        # Une lecture OCR incomplète n'est PAS un conflit. On ne déclare
-        # VISION_CONFLICT que lorsque les coordonnées ont réellement été lues
-        # et contredisent la cible Atlas. Cela évite les faux conflits dus à
-        # des textes parasites (barre DeepL, UI Windows, boutons du jeu, etc.).
+        # An incomplete OCR reading is NOT a conflict. VISION_CONFLICT is only declared
+        # when coordinates were actually read and contradict the Atlas target.
+        # This avoids false conflicts from parasitic text (DeepL bar, Windows UI, game buttons).
         location_seen = (ox is not None and oy is not None)
         if pok and lok and power_ok:
             status='VISION_VERIFIED'
@@ -338,45 +337,43 @@ class UnifiedDB(core.StateDB):
             mev=self.conn.execute("SELECT COUNT(*) FROM map_observations WHERE session_id=? AND atlas_id=?",(session_id,aid)).fetchone()[0]
             vv=self.conn.execute("SELECT COUNT(*) FROM vision_observations WHERE session_id=? AND atlas_id=? AND status IN ('VISION_VERIFIED','VISION_ID_OK')",(session_id,aid)).fetchone()[0]
             vcf=self.conn.execute("SELECT COUNT(*) FROM vision_observations WHERE session_id=? AND atlas_id=? AND status='VISION_CONFLICT'",(session_id,aid)).fetchone()[0]
-            # Une valeur Power déjà présente dans players ne prouve pas qu'elle a
-            # été revérifiée pendant CETTE visite. C'est ce qui faisait afficher
-            # Mori SEEN_OK avec une ancienne puissance de 37 M alors que la fiche
-            # courante affichait 217 M. On exige désormais une observation de
-            # puissance de la session courante pour déclarer SEEN_OK.
+            # A Power value already present in players does not prove it was
+            # re-verified during THIS visit. We now require a power observation
+            # from the current session to declare SEEN_OK.
             pvev=self.conn.execute("SELECT COUNT(*) FROM power_observations WHERE session_id=? AND atlas_id=?",(session_id,aid)).fetchone()[0]
             cf=self.conn.execute("SELECT COUNT(*) FROM identity_observations WHERE session_id=? AND atlas_id=? AND status='CONFLICT'",(session_id,aid)).fetchone()[0]
             seen=1 if (ev or mev or vv) else 0
             bw=(before or {}).get('wos_id'); bp=(before or {}).get('power'); aw=(after or {}).get('wos_id'); ap=(after or {}).get('power')
-            if cf or vcf: result='CONFLICT'; detail='Conflit réseau ou visuel : pseudo / localisation différents de la cible Atlas.'
+            if cf or vcf: result='CONFLICT'; detail='Network or vision conflict: name / location different from Atlas target.'
             elif aw is None or ap is None:
                 result='MISSING'
                 v=self.conn.execute("SELECT observed_pseudo,pseudo_score,observed_x,observed_y,observed_power,pseudo_ok,location_ok FROM vision_observations WHERE session_id=? AND atlas_id=? ORDER BY id DESC LIMIT 1",(session_id,aid)).fetchone()
                 if v and v['pseudo_ok'] and v['location_ok'] and v['observed_power']:
-                    detail='Vision OK (pseudo, X/Y, puissance) ; WOS ID réseau encore manquant.' if aw is None else 'Vision OK mais puissance non promue.'
+                    detail='Vision OK (name, X/Y, power); WOS ID still missing from network.' if aw is None else 'Vision OK but power not promoted.'
                 elif v:
                     bits=[]
                     if v['observed_pseudo']: bits.append(f"pseudo lu={v['observed_pseudo']}")
                     if v['observed_x'] is not None or v['observed_y'] is not None: bits.append(f"XY lu=X{v['observed_x']} Y{v['observed_y']}")
                     if v['observed_power']: bits.append(f"power lu={v['observed_power']}")
-                    detail='Vision partielle ('+', '.join(bits)+') ; WOS ID ou puissance encore manquant.' if bits else 'Vision inexploitable ; WOS ID ou puissance toujours manquant après visite.'
-                else: detail='WOS ID ou puissance toujours manquant après visite.'
+                    detail='Partial vision ('+', '.join(bits)+'); WOS ID or power still missing.' if bits else 'Vision unusable; WOS ID or power still missing after visit.'
+                else: detail='WOS ID or power still missing after visit.'
             elif seen and pvev:
                 result='SEEN_OK'
                 if bp is not None and ap is not None and int(bp) != int(ap):
-                    detail=f'Joueur revu; puissance revérifiée et mise à jour {int(bp):,} -> {int(ap):,}.'
+                    detail=f'Player revisited; power re-verified and updated {int(bp):,} -> {int(ap):,}.'
                 else:
-                    detail='Joueur revu; WOS ID présent et puissance revérifiée pendant cette session.'
+                    detail='Player revisited; WOS ID present and power re-verified this session.'
             elif seen:
-                result='NOT_SEEN'; detail='Joueur revu, mais puissance NON revérifiée pendant cette visite : ancienne valeur conservée, pas de SEEN_OK.'
+                result='NOT_SEEN'; detail='Player revisited, but power NOT re-verified this visit: old value kept, no SEEN_OK.'
             else:
-                result='NOT_SEEN'; detail='Données complètes en base mais aucun record Atlas ancré revu pendant cette visite.'
+                result='NOT_SEEN'; detail='Complete data in DB but no anchored Atlas record revisited this visit.'
             self.conn.execute("INSERT OR REPLACE INTO verification_results(run_id,atlas_id,pseudo_display,x,y,before_wos_id,before_power,after_wos_id,after_power,live_seen,conflict_seen,result,detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(run_id,aid,row.get('pseudo_display'),row.get('atlas_x'),row.get('atlas_y'),bw,bp,aw,ap,seen,1 if cf else 0,result,detail))
             return result,seen
     def verification_results_for_run(self,run_id):
         with self.lock: return [dict(r) for r in self.conn.execute("SELECT * FROM verification_results WHERE run_id=? ORDER BY CASE result WHEN 'CONFLICT' THEN 0 WHEN 'MISSING' THEN 1 WHEN 'NOT_SEEN' THEN 2 ELSE 3 END,pseudo_display",(int(run_id),))]
     def export_unified_csv(self,kid,path):
         with Path(path).open('w',newline='',encoding='utf-8-sig') as f:
-            w=csv.writer(f); w.writerow(['Etat','Atlas ID','Pseudo','Alliance','X','Y','Niveau','Power Atlas','WOS ID','Power WOS','Derniere synchro Atlas'])
+            w=csv.writer(f); w.writerow(['State','Atlas ID','Name','Alliance','X','Y','Level','Atlas Power','WOS ID','WOS Power','Last Atlas Sync'])
             for r in self.atlas_rows(kid): w.writerow([kid,r['atlas_id'],r['pseudo_display'],r['alliance_tag'],r['atlas_x'],r['atlas_y'],r['atlas_level'],r['atlas_power'],r['wos_id'],r['power'],r['atlas_last_sync']])
     def atlas_roster_consensus(self, atlas_ids):
         """Infer the alliance of a ranking roster from Atlas memberships.
@@ -502,6 +499,8 @@ class UnifiedDB(core.StateDB):
                    ORDER BY pair_valid DESC,sightings DESC,pseudo_display LIMIT 80""",(session_id,)).fetchall()
         return dict(r or {}) if r else {'n':0,'players':0,'atlas_id_anchors':0,'wos_candidates':0,'pair_valid':0}, [dict(x) for x in rows]
 
+
+
 class AtlasClient:
     def __init__(self,log,cookie=''):
         self.log=log; self.timeout=20; self.delay=.50; self.kid=None; self.cookie=(cookie or '').strip()
@@ -522,6 +521,31 @@ class AtlasClient:
             h['Cookie']=self.cookie
         return h
 
+
+    def _refresh_token(self):
+        try:
+            req = urllib.request.Request(
+                'https://api.wosatlas.com/v1/auth/refresh',
+                method='POST',
+                headers={'Cookie': self.cookie, 'Origin': 'https://wosatlas.com', 'Content-Type': 'application/json'},
+                data=b'{}'
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout, context=SSL_CONTEXT) as r:
+                cookies = r.info().get_all('Set-Cookie')
+                if not cookies: return False
+                new_at = new_rt = None
+                for c in cookies:
+                    if c.startswith('wos_at='): new_at = c.split(';')[0]
+                    elif c.startswith('wos_rt='): new_rt = c.split(';')[0]
+                if new_at and new_rt:
+                    self.cookie = f"{new_at}; {new_rt}"
+                    (BASE_DIR / 'atlas_cookies.txt').write_text(self.cookie, encoding='utf-8')
+                    self.log('WOS Atlas Auth: successfully auto-refreshed expired tokens.')
+                    return True
+        except Exception as e:
+            self.log(f'WOS Atlas Auth: failed to auto-refresh token: {e}')
+        return False
+
     def get(self,url,retries=2):
         for attempt in range(retries+1):
             req=urllib.request.Request(url,headers=self._headers())
@@ -530,6 +554,10 @@ class AtlasClient:
                     raw=r.read().decode(r.headers.get_content_charset() or 'utf-8',errors='replace')
                     return json.loads(raw)
             except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt == 0:
+                    self.log('Atlas Auth: 401 Unauthorized. Attempting auto-refresh...')
+                    if self._refresh_token():
+                        continue
                 if e.code==429:
                     wait=30 if attempt<retries else 60
                     self.log(f'WOS Atlas : rate-limit 429, pause {wait} s...'); time.sleep(wait)
@@ -537,14 +565,14 @@ class AtlasClient:
                     self.log(f'WOS Atlas HTTP {e.code}: {url}')
                     break
             except Exception as e:
-                self.log(f'WOS Atlas erreur ({attempt+1}/{retries+1}): {e}')
+                self.log(f'WOS Atlas error ({attempt+1}/{retries+1}): {e}')
             finally:
                 time.sleep(self.delay)
         return None
 
     def leaderboard(self,kid):
         self.kid=int(kid)
-        return self.get(LEADERBOARD_URL.format(limit=100,kid=kid))
+        return self.get(LEADERBOARD_URL.format(limit=10,kid=kid))
 
     def members(self,aid,expected_count=0):
         url=MEMBERS_URL.format(aid=aid)
@@ -556,10 +584,15 @@ class AtlasClient:
             members=payload.get('members')
             if isinstance(members,list) and (members or int(expected_count or 0)==0):
                 return payload
+            tier=str(payload.get('viewerTier') or '').upper()
+            if tier == 'ANONYMOUS' and attempt == 0:
+                self.log('Atlas Auth: Session expired (ANONYMOUS). Attempting auto-refresh...')
+                if self._refresh_token():
+                    continue
+
             got_count=payload.get('memberCount')
             keys=','.join(sorted(map(str,payload.keys())))
-            tier=payload.get('viewerTier')
-            self.log(f'Atlas /members AID {aid}: réponse 200 mais members vide (memberCount={got_count}, attendu≈{expected_count}, viewerTier={tier}, clés={keys}) ; tentative {attempt+1}/3...')
+            self.log(f'Atlas /members AID {aid}: 200 response but members empty (memberCount={got_count}, expected≈{expected_count}, viewerTier={tier}, keys={keys}) ; attempt {attempt+1}/3...')
             time.sleep(1.0 + attempt)
         return last
 
@@ -570,26 +603,60 @@ class App:
     def __init__(self):
         self.root=tk.Tk(); self.root.title(f'WOS Unified Manager V{APP_VERSION}'); self.root.geometry('1250x800')
         self.db=UnifiedDB(DB_PATH); self.decoder=core.DecoderBundle(BASE_DIR); self.events=queue.Queue(); self.engine=core.CollectorEngine(self.decoder,self.db,self.log,self.stats_event); self.live=core.LiveCapture(self.engine,self.log)
-        self.capture_path=None; self.session_id=''; self.atlas_busy=False; self.atlas_cookie=''; self.nav_stop=threading.Event(); self.nav_thread=None; self.nav_config=self._load_nav_config(); self._build(); self.root.after(120,self._poll); self.root.protocol('WM_DELETE_WINDOW',self.close)
+        self.capture_path=None; self.session_id=''; self.atlas_busy=False; self.atlas_cookie=''; self.nav_stop=threading.Event(); self.nav_thread=None; self.nav_config=self._load_nav_config()
+        # Auto-load cookies
+        try:
+            from pathlib import Path
+            if Path('atlas_cookies.txt').exists():
+                self.atlas_cookie = Path('atlas_cookies.txt').read_text(encoding='utf-8').strip()
+                self.log('WOS Atlas cookies automatically loaded from file.')
+        except: pass
+        self._build(); self.root.after(120,self._poll); self.root.protocol('WM_DELETE_WINDOW',self.close)
     def log(self,msg): self.events.put(('log',str(msg)))
     def stats_event(self,d): self.events.put(('stats',d))
     def _build(self):
-        top=ttk.Frame(self.root,padding=10); top.pack(fill='x'); ttk.Label(top,text='État :').pack(side='left'); self.kid=tk.StringVar(value='3693'); ttk.Entry(top,textvariable=self.kid,width=9).pack(side='left',padx=(5,15))
-        ttk.Button(top,text='Session WOS Atlas',command=self.configure_atlas_session).pack(side='left',padx=4); ttk.Button(top,text='Importer WOS Atlas',command=self.start_atlas_sync).pack(side='left',padx=4); ttk.Button(top,text='Consolider WOS LIVE',command=self.start_consolidation).pack(side='left',padx=4); ttk.Button(top,text='Découverte CARTE',command=self.start_map_discovery).pack(side='left',padx=4); self.btn_stop=ttk.Button(top,text='Arrêter capture',command=self.stop_live,state='disabled'); self.btn_stop.pack(side='left',padx=4); ttk.Button(top,text='Exporter CSV',command=self.export_csv).pack(side='left',padx=4); ttk.Button(top,text='Rapport diagnostic',command=self.show_diagnostic_report).pack(side='left',padx=4); ttk.Button(top,text='Export diagnostic',command=self.export_diagnostic).pack(side='left',padx=4)
-        self.atlas_session_status=tk.StringVar(value='Atlas: non connecté'); ttk.Label(top,textvariable=self.atlas_session_status).pack(side='left',padx=(10,4)); self.status=tk.StringVar(value='Prêt'); ttk.Label(top,textvariable=self.status).pack(side='right')
-        cards=ttk.LabelFrame(self.root,text='État sélectionné',padding=8); cards.pack(fill='x',padx=10,pady=(0,8)); self.svars={k:tk.StringVar(value='0') for k in ['alliances','players','atlas_power','wos','wos_power','pending']}
-        for i,(lab,key) in enumerate([('Alliances Atlas','alliances'),('Joueurs Atlas','players'),('Power Atlas','atlas_power'),('WOS ID','wos'),('Power WOS','wos_power'),('À consolider','pending')]):
+        top=ttk.Frame(self.root,padding=10); top.pack(fill='x'); ttk.Label(top,text='State:').pack(side='left'); self.kid=tk.StringVar(value='3693'); ttk.Entry(top,textvariable=self.kid,width=9).pack(side='left',padx=(5,5)); ttk.Label(top,text='Alliance:').pack(side='left'); self.var_alliance_filter=tk.StringVar(); ttk.Entry(top,textvariable=self.var_alliance_filter,width=6).pack(side='left',padx=(0,15))
+        ttk.Button(top,text='WOS Atlas Session',command=self.configure_atlas_session).pack(side='left',padx=4); ttk.Button(top,text='Import WOS Atlas',command=self.start_atlas_sync).pack(side='left',padx=4); ttk.Button(top,text='Consolidate WOS Live',command=self.start_consolidation).pack(side='left',padx=4); ttk.Button(top,text='Map Discovery',command=self.start_map_discovery).pack(side='left',padx=4); self.btn_stop=ttk.Button(top,text='Stop Capture',command=self.stop_live,state='disabled'); self.btn_stop.pack(side='left',padx=4); ttk.Button(top,text='Export CSV',command=self.export_csv).pack(side='left',padx=4); ttk.Button(top,text='Diagnostic Report',command=self.show_diagnostic_report).pack(side='left',padx=4); ttk.Button(top,text='Diagnostic Export',command=self.export_diagnostic).pack(side='left',padx=4); ttk.Button(top,text='Reset Everything',command=self.reset_everything).pack(side='left',padx=4)
+        self.atlas_session_status=tk.StringVar(value='Atlas: not connected'); ttk.Label(top,textvariable=self.atlas_session_status).pack(side='left',padx=(10,4)); self.status=tk.StringVar(value='Ready'); ttk.Label(top,textvariable=self.status).pack(side='right')
+        # Language setting dropdown
+        ttk.Label(top,text='Lang:').pack(side='right',padx=(0,2))
+        self._lang_var=tk.StringVar(value=self.nav_config.get('lang','en').upper())
+        lang_cb=ttk.Combobox(top,textvariable=self._lang_var,values=['EN','FR'],width=4,state='readonly')
+        lang_cb.pack(side='right',padx=(0,6))
+        lang_cb.bind('<<ComboboxSelected>>',self._on_lang_change)
+        
+        # --- AUTO-LOAD COOKIES ---
+        cookie_path = BASE_DIR / 'atlas_cookies.txt'
+        if cookie_path.exists():
+            try:
+                raw_txt = cookie_path.read_text(encoding='utf-8')
+                extracted = self._extract_atlas_cookie(raw_txt)
+                if extracted:
+                    self.atlas_cookie = extracted
+                    self.atlas_session_status.set('Atlas: session configured (auto)')
+                    self.log('WOS Atlas cookies automatically loaded from file.')
+            except Exception as e:
+                self.log(f'Error reading atlas_cookies.txt: {e}')
+        cards=ttk.LabelFrame(self.root,text='Selected State',padding=8); cards.pack(fill='x',padx=10,pady=(0,8)); self.svars={k:tk.StringVar(value='0') for k in ['alliances','players','atlas_power','wos','wos_power','pending']}
+        for i,(lab,key) in enumerate([('Alliances Atlas','alliances'),('Atlas Players','players'),('Power Atlas','atlas_power'),('WOS ID','wos'),('Power WOS','wos_power'),('Pending Consolidation','pending')]):
             f=ttk.Frame(cards); f.grid(row=0,column=i,padx=18,sticky='w'); ttk.Label(f,text=lab).pack(); ttk.Label(f,textvariable=self.svars[key],font=('Segoe UI',14,'bold')).pack()
-        book=ttk.Notebook(self.root); book.pack(fill='both',expand=True,padx=10,pady=4); data=ttk.Frame(book,padding=6); logtab=ttk.Frame(book,padding=6); autotab=ttk.Frame(book,padding=6); book.add(data,text='Base joueurs'); book.add(logtab,text='Journal / Live'); book.add(autotab,text='Scan MAP / Vérification')
-        filt=ttk.Frame(data); filt.pack(fill='x'); ttk.Label(filt,text='Recherche :').pack(side='left'); self.query=tk.StringVar(); ttk.Entry(filt,textvariable=self.query,width=35).pack(side='left',padx=6); ttk.Button(filt,text='Actualiser',command=self.refresh).pack(side='left')
+        book=ttk.Notebook(self.root); book.pack(fill='both',expand=True,padx=10,pady=4); data=ttk.Frame(book,padding=6); logtab=ttk.Frame(book,padding=6); autotab=ttk.Frame(book,padding=6); book.add(data,text='Player Database'); book.add(logtab,text='Log / Live'); book.add(autotab,text='MAP Scan / Verification')
+        filt=ttk.Frame(data); filt.pack(fill='x'); 
+        ttk.Label(filt,text='Alliance:').pack(side='left',padx=2)
+        self.db_alliance_filter = tk.StringVar(value='')
+        self.db_alliance_combo = ttk.Combobox(filt, textvariable=self.db_alliance_filter, state='readonly', width=10)
+        self.db_alliance_combo.pack(side='left', padx=4)
+        ttk.Label(filt,text='Search:').pack(side='left',padx=(10,2))
+        self.query=tk.StringVar(); ttk.Entry(filt,textvariable=self.query,width=25).pack(side='left',padx=2); ttk.Button(filt,text='Refresh',command=self.refresh).pack(side='left',padx=6)
+
         cols=('pseudo','alliance','atlas','xy','lv','apat','wos','pwos'); self.tree=ttk.Treeview(data,columns=cols,show='headings')
-        for c,l,w in [('pseudo','Pseudo',230),('alliance','Alliance',75),('atlas','Atlas ID',110),('xy','X / Y',85),('lv','Niv.',55),('apat','Power Atlas',125),('wos','WOS ID',110),('pwos','Power WOS',125)]: self.tree.heading(c,text=l); self.tree.column(c,width=w,anchor='w' if c=='pseudo' else 'center')
+        for c,l,w in [('pseudo','Name',230),('alliance','Alliance',75),('atlas','Atlas ID',110),('xy','X / Y',85),('lv','Level',55),('apat','Power Atlas',125),('wos','WOS ID',110),('pwos','Power WOS',125)]: self.tree.heading(c,text=l); self.tree.column(c,width=w,anchor='w' if c=='pseudo' else 'center')
         sy=ttk.Scrollbar(data,orient='vertical',command=self.tree.yview); self.tree.configure(yscrollcommand=sy.set); sy.pack(side='right',fill='y'); self.tree.pack(fill='both',expand=True,pady=6)
         self.logbox=tk.Text(logtab,wrap='none',font=('Consolas',9)); self.logbox.pack(fill='both',expand=True); self._build_automation_tab(autotab); self.query.trace_add('write',lambda *_: self.refresh()); self.refresh()
 
-    # ---------- Fenêtre WOS / bureau multi-écrans ----------
+    # ---------- WOS Window / multi-monitor desktop ----------
     def _win32_root_from_point(self, x, y):
-        """Retourne la fenêtre top-level située sous un point du bureau virtuel."""
+        """Returns the top-level window under a point on the virtual desktop."""
         if os.name != 'nt': return None
         try:
             import ctypes
@@ -621,7 +688,7 @@ class App:
             return None
 
     def _resolve_wos_window(self, quiet=False):
-        """Retrouve la fenêtre calibrée même après redémarrage / déplacement d'écran."""
+        """Finds the calibrated window even after restart / monitor move."""
         if os.name!='nt': return None
         cfg=self.nav_config.get('window') or {}
         wanted_title=str(cfg.get('title') or '')
@@ -645,20 +712,20 @@ class App:
                 return True
             user32.EnumWindows(CB(cb),0)
             if matches:
-                # Si plusieurs fenêtres ont la même classe, privilégie le titre exact puis la plus grande.
+                # If multiple windows share the same class, prefer exact title then the largest.
                 matches.sort(key=lambda x:((x['title']==wanted_title),x['width']*x['height']),reverse=True)
                 self._wos_hwnd=matches[0]['hwnd']; return matches[0]
         except Exception:
             pass
         if not quiet:
-            self.log('Navigation PC: fenêtre WOS calibrée introuvable. Recalibre un point dans la fenêtre WOS.')
+            self.log('PC Navigation: calibrated WOS window not found. Recalibrate a point in the WOS window.')
         return None
 
     def _focus_wos_window(self):
         inf=self._resolve_wos_window()
         if not inf: return None
         if inf.get('minimized'):
-            raise RuntimeError('La fenêtre WOS est minimisée.')
+            raise RuntimeError('The WOS window is minimized.')
         try:
             import ctypes
             ctypes.windll.user32.SetForegroundWindow(int(inf['hwnd']))
@@ -667,21 +734,21 @@ class App:
         return inf
 
     def _abs_nav_point(self,key):
-        """Convertit un point calibré relatif à WOS vers le bureau virtuel courant."""
+        """Converts a calibrated point relative to WOS to the current virtual desktop."""
         pts=self.nav_config.get('points',{})
         p=pts.get(key)
-        if not (isinstance(p,list) and len(p)==2): raise RuntimeError(f'Point {key} non calibré')
+        if not (isinstance(p,list) and len(p)==2): raise RuntimeError(f'Point {key} not calibrated')
         if self.nav_config.get('coordinate_mode')!='window-relative':
-            raise RuntimeError('Ancienne calibration absolue détectée : refais les 5 points de calibration.')
+            raise RuntimeError('Legacy absolute calibration detected: redo the 5 calibration points.')
         inf=self._resolve_wos_window()
-        if not inf: raise RuntimeError('Fenêtre WOS introuvable')
+        if not inf: raise RuntimeError('WOS Window Not Found')
         return [int(inf['left']+p[0]),int(inf['top']+p[1])]
 
     def _capture_wos_window_image(self):
-        """Capture uniquement la fenêtre WOS, y compris si elle est sur un écran à coordonnées négatives."""
+        """Captures only the WOS window, including if on a negative-coordinate monitor."""
         inf=self._resolve_wos_window()
-        if not inf: raise RuntimeError('Fenêtre WOS introuvable pour la capture')
-        if inf.get('minimized'): raise RuntimeError('Fenêtre WOS minimisée')
+        if not inf: raise RuntimeError('WOS Window Not Found pour la capture')
+        if inf.get('minimized'): raise RuntimeError('WOS Window Minimized')
         from PIL import ImageGrab
         bbox=(int(inf['left']),int(inf['top']),int(inf['right']),int(inf['bottom']))
         try:
@@ -698,60 +765,60 @@ class App:
     def _save_nav_config(self):
         NAV_CONFIG_PATH.write_text(json.dumps(self.nav_config,ensure_ascii=False,indent=2),encoding='utf-8')
     def _build_automation_tab(self,parent):
-        info=ttk.LabelFrame(parent,text='Navigation PC (souris/clavier)',padding=8); info.pack(fill='x',pady=(0,8))
-        ttk.Label(info,text="Calibration V4.0.49 : navigation + zones visuelles sont enregistrées RELATIVEMENT à la fenêtre WOS. Tu peux déplacer WOS sur l’autre écran sans recalibrer.").grid(row=0,column=0,columnspan=6,sticky='w',pady=(0,2)); self.nav_window_var=tk.StringVar(value='Fenêtre WOS : non liée'); ttk.Label(info,textvariable=self.nav_window_var).grid(row=3,column=0,columnspan=5,sticky='w',pady=(0,5))
+        info=ttk.LabelFrame(parent,text='PC Navigation (mouse/keyboard)',padding=8); info.pack(fill='x',pady=(0,8))
+        ttk.Label(info,text="Calibration V4.0.49: navigation + visual zones are saved RELATIVE to the WOS window. You can move WOS to another screen without recalibrating.").grid(row=0,column=0,columnspan=6,sticky='w',pady=(0,2)); self.nav_window_var=tk.StringVar(value='WOS Window : Unlinked'); ttk.Label(info,textvariable=self.nav_window_var).grid(row=3,column=0,columnspan=5,sticky='w',pady=(0,5))
         self.nav_point_vars={k:tk.StringVar() for k in ('coord','x','y','go','city')}
-        labels=[('coord','Bouton coordonnées'),('x','Champ X'),('y','Champ Y'),('go','Bouton Aller'),('city','Ville ciblée')]
+        labels=[('coord','Coordinates Button'),('x','X Field'),('y','Y Field'),('go','Go Button'),('city','Target City')]
         for i,(key,label) in enumerate(labels):
-            ttk.Button(info,text='Calibrer '+label,command=lambda k=key,l=label:self._capture_nav_point(k,l)).grid(row=1,column=i,padx=3,pady=3,sticky='ew')
+            ttk.Button(info,text='Calibrate '+label,command=lambda k=key,l=label:self._capture_nav_point(k,l)).grid(row=1,column=i,padx=3,pady=3,sticky='ew')
             ttk.Label(info,textvariable=self.nav_point_vars[key]).grid(row=2,column=i,padx=3,sticky='ew')
         self._refresh_nav_labels()
 
-        # V4.0.47 : calibration déterministe des 3 zones de la pancarte joueur.
-        # Chaque rectangle est défini par deux coins, eux-mêmes relatifs à la fenêtre WOS.
-        vision=ttk.LabelFrame(info,text='Calibration visuelle de la plaque joueur (profil standard)',padding=6)
+        # V4.0.47: deterministic calibration of the 3 player card zones.
+        # Each rectangle is defined by two corners, themselves relative to the WOS window.
+        vision=ttk.LabelFrame(info,text='Visual calibration of player plate (standard profile)',padding=6)
         vision.grid(row=4,column=0,columnspan=5,sticky='ew',pady=(8,4))
-        ttk.Label(vision,text='Ouvre manuellement une plaque joueur standard puis calibre les coins HG/BD de chaque zone. L’agent ne lira ensuite QUE ces rectangles.').grid(row=0,column=0,columnspan=7,sticky='w',pady=(0,4))
-        self.vision_zone_vars={k:tk.StringVar(value='non calibrée') for k in ('pseudo','coords','power')}
-        vlabels=[('pseudo','Pseudo'),('coords','Coordonnées X/Y'),('power','Puissance')]
+        ttk.Label(vision,text='Manually open a standard player plate then calibrate Top-Left/Bottom-Right corners. The agent will ONLY read these rectangles.').grid(row=0,column=0,columnspan=7,sticky='w',pady=(0,4))
+        self.vision_zone_vars={k:tk.StringVar(value='uncalibrated') for k in ('pseudo','coords','power')}
+        vlabels=[('pseudo','Name'),('coords','X/Y Coordinates'),('power','Power')]
         for i,(key,label) in enumerate(vlabels,1):
             ttk.Label(vision,text=label,width=16).grid(row=i,column=0,sticky='w',padx=(0,4))
-            ttk.Button(vision,text='Coin HG',command=lambda k=key,l=label:self._capture_vision_corner(k,'tl',l+' — coin haut-gauche')).grid(row=i,column=1,padx=2,pady=2)
-            ttk.Button(vision,text='Coin BD',command=lambda k=key,l=label:self._capture_vision_corner(k,'br',l+' — coin bas-droit')).grid(row=i,column=2,padx=2,pady=2)
+            ttk.Button(vision,text='Top-Left',command=lambda k=key,l=label:self._capture_vision_corner(k,'tl',l+' — Top-Left corner')).grid(row=i,column=1,padx=2,pady=2)
+            ttk.Button(vision,text='Bottom-Right',command=lambda k=key,l=label:self._capture_vision_corner(k,'br',l+' — Bottom-Right corner')).grid(row=i,column=2,padx=2,pady=2)
             ttk.Label(vision,textvariable=self.vision_zone_vars[key],width=36).grid(row=i,column=3,columnspan=3,sticky='w',padx=6)
-        ttk.Button(vision,text='Effacer zones visuelles',command=self._clear_vision_zones).grid(row=1,column=6,rowspan=3,padx=8,sticky='ns')
+        ttk.Button(vision,text='Clear Visual Zones',command=self._clear_vision_zones).grid(row=1,column=6,rowspan=3,padx=8,sticky='ns')
         self._refresh_vision_labels()
 
         cfg=ttk.Frame(info); cfg.grid(row=5,column=0,columnspan=5,sticky='w',pady=(8,2))
-        ttk.Label(cfg,text='Temps ville ouverte (s) :').pack(side='left'); self.nav_dwell=tk.DoubleVar(value=5.0); ttk.Spinbox(cfg,from_=2,to=15,increment=.5,textvariable=self.nav_dwell,width=6).pack(side='left',padx=4)
-        self.screen_ocr_enabled=tk.BooleanVar(value=True); ttk.Checkbutton(cfg,text='Agent visuel : pseudo + puissance + X/Y',variable=self.screen_ocr_enabled).pack(side='left',padx=8)
-        ttk.Button(cfg,text='Tester une coordonnée',command=self._test_navigation).pack(side='left',padx=10)
-        scan=ttk.LabelFrame(parent,text='Scan ciblé des comptes manquants',padding=8); scan.pack(fill='x',pady=(0,8))
-        self.nav_alliance=tk.StringVar(value='TOUTES'); self.nav_missing=tk.BooleanVar(value=True)
-        ttk.Label(scan,text='Alliance :').grid(row=0,column=0,sticky='w'); self.nav_combo=ttk.Combobox(scan,textvariable=self.nav_alliance,state='readonly',width=15); self.nav_combo.grid(row=0,column=1,padx=5,sticky='w')
-        ttk.Checkbutton(scan,text='Seulement WOS ID / puissance manquants',variable=self.nav_missing).grid(row=0,column=2,padx=8,sticky='w')
-        ttk.Button(scan,text='Actualiser alliances',command=self._refresh_alliance_combo).grid(row=0,column=3,padx=4)
-        ttk.Button(scan,text='Démarrer scan automatique',command=self.start_pc_map_scan).grid(row=1,column=0,columnspan=2,padx=4,pady=6,sticky='ew')
-        ttk.Button(scan,text='ARRÊTER navigation',command=self.stop_pc_navigation).grid(row=1,column=2,padx=4,pady=6,sticky='ew')
+        ttk.Label(cfg,text='Open City Time (s):').pack(side='left'); self.nav_dwell=tk.DoubleVar(value=5.0); ttk.Spinbox(cfg,from_=2,to=15,increment=.5,textvariable=self.nav_dwell,width=6).pack(side='left',padx=4)
+        self.screen_ocr_enabled=tk.BooleanVar(value=True); ttk.Checkbutton(cfg,text='Visual Agent: nickname + power + X/Y',variable=self.screen_ocr_enabled).pack(side='left',padx=8)
+        ttk.Button(cfg,text='Test Coordinate',command=self._test_navigation).pack(side='left',padx=10)
+        scan=ttk.LabelFrame(parent,text='Targeted scan of missing accounts',padding=8); scan.pack(fill='x',pady=(0,8))
+        self.nav_alliance=tk.StringVar(value='ALL'); self.nav_missing=tk.BooleanVar(value=True)
+        ttk.Label(scan,text='Alliance:').grid(row=0,column=0,sticky='w'); self.nav_combo=ttk.Combobox(scan,textvariable=self.nav_alliance,state='readonly',width=15); self.nav_combo.grid(row=0,column=1,padx=5,sticky='w')
+        ttk.Checkbutton(scan,text='Only missing WOS ID / power',variable=self.nav_missing).grid(row=0,column=2,padx=8,sticky='w')
+        ttk.Button(scan,text='Refresh alliances',command=self._refresh_alliance_combo).grid(row=0,column=3,padx=4)
+        ttk.Button(scan,text='Start Auto Scan',command=self.start_pc_map_scan).grid(row=1,column=0,columnspan=2,padx=4,pady=6,sticky='ew')
+        ttk.Button(scan,text='STOP Navigation',command=self.stop_pc_navigation).grid(row=1,column=2,padx=4,pady=6,sticky='ew')
         self.nav_progress=tk.StringVar(value='Inactif'); ttk.Label(scan,textvariable=self.nav_progress).grid(row=1,column=3,padx=8,sticky='w')
-        verify=ttk.LabelFrame(parent,text='Vérification d’une alliance',padding=8); verify.pack(fill='both',expand=True)
-        ttk.Label(verify,text="Le module visite chaque ville. L’agent visuel vérifie pseudo + puissance + X/Y ; le réseau conserve la récupération du WOS ID.").pack(anchor='w')
-        bar=ttk.Frame(verify); bar.pack(fill='x',pady=5); ttk.Label(bar,text='Alliance :').pack(side='left'); self.verify_alliance=tk.StringVar(value='ROY'); self.verify_combo=ttk.Combobox(bar,textvariable=self.verify_alliance,state='readonly',width=15); self.verify_combo.pack(side='left',padx=5); ttk.Button(bar,text='Lancer vérification',command=self.start_alliance_verification).pack(side='left',padx=5)
-        ttk.Button(bar,text='VISION PROPRE (base vierge)',command=self.start_clean_vision_benchmark).pack(side='left',padx=5)
-        ttk.Button(bar,text='Ouvrir résultats Vision',command=self.open_clean_vision_results).pack(side='left',padx=5)
-        self.verify_status=tk.StringVar(value='Aucune vérification lancée'); ttk.Label(bar,textvariable=self.verify_status).pack(side='left',padx=10)
+        verify=ttk.LabelFrame(parent,text='Alliance Verification',padding=8); verify.pack(fill='both',expand=True)
+        ttk.Label(verify,text="The module visits each city. The visual agent verifies nickname+power+X/Y; the network retains WOS ID recovery.").pack(anchor='w')
+        bar=ttk.Frame(verify); bar.pack(fill='x',pady=5); ttk.Label(bar,text='Alliance:').pack(side='left'); self.verify_alliance=tk.StringVar(value='ROY'); self.verify_combo=ttk.Combobox(bar,textvariable=self.verify_alliance,state='readonly',width=15); self.verify_combo.pack(side='left',padx=5); ttk.Button(bar,text='Start Verification',command=self.start_alliance_verification).pack(side='left',padx=5)
+        ttk.Button(bar,text='CLEAN VISION (empty DB)',command=self.start_clean_vision_benchmark).pack(side='left',padx=5)
+        ttk.Button(bar,text='Open Vision Results',command=self.open_clean_vision_results).pack(side='left',padx=5)
+        self.verify_status=tk.StringVar(value='No verification started'); ttk.Label(bar,textvariable=self.verify_status).pack(side='left',padx=10)
         cols=('pseudo','atlas','result','wos','power','detail'); self.verify_tree=ttk.Treeview(verify,columns=cols,show='headings',height=8)
-        for c,l,w in [('pseudo','Pseudo',200),('atlas','Atlas ID',100),('result','Résultat',100),('wos','WOS ID',105),('power','Power WOS',115),('detail','Détail',430)]: self.verify_tree.heading(c,text=l); self.verify_tree.column(c,width=w,anchor='w' if c in ('pseudo','detail') else 'center')
+        for c,l,w in [('pseudo','Name',200),('atlas','Atlas ID',100),('result','Result',100),('wos','WOS ID',105),('power','Power WOS',115),('detail','Detail',430)]: self.verify_tree.heading(c,text=l); self.verify_tree.column(c,width=w,anchor='w' if c in ('pseudo','detail') else 'center')
         self.verify_tree.pack(fill='both',expand=True,pady=4)
         self._refresh_alliance_combo()
     def _refresh_nav_labels(self):
         pts=self.nav_config.get('points',{})
         rel=self.nav_config.get('coordinate_mode')=='window-relative'
         for k,v in getattr(self,'nav_point_vars',{}).items():
-            p=pts.get(k); v.set((f"rel {p[0]},{p[1]}" if rel else f"ABS {p[0]},{p[1]}") if isinstance(p,list) and len(p)==2 else 'non calibré')
+            p=pts.get(k); v.set((f"rel {p[0]},{p[1]}" if rel else f"ABS {p[0]},{p[1]}") if isinstance(p,list) and len(p)==2 else 'not calibrated')
         if hasattr(self,'nav_window_var'):
             w=self.nav_config.get('window') or {}; title=w.get('title') or '?'; cls=w.get('class') or '?'
-            self.nav_window_var.set(f"Fenêtre WOS : {title}  [{cls}]" if w else 'Fenêtre WOS : non liée')
+            self.nav_window_var.set(f"WOS Window: {title}  [{cls}]" if w else 'WOS Window : Unlinked')
     def _refresh_vision_labels(self):
         zones=self.nav_config.get('vision_zones',{}) or {}
         for key,var in getattr(self,'vision_zone_vars',{}).items():
@@ -761,42 +828,42 @@ class App:
                 x1,y1=tl; x2,y2=br
                 var.set(f'rel ({x1},{y1}) → ({x2},{y2})  {abs(x2-x1)}×{abs(y2-y1)}')
             elif isinstance(tl,list) and len(tl)==2:
-                var.set(f'HG rel {tl[0]},{tl[1]} — BD manquant')
+                var.set(f'TL rel {tl[0]},{tl[1]} — BR missing')
             elif isinstance(br,list) and len(br)==2:
-                var.set(f'HG manquant — BD rel {br[0]},{br[1]}')
+                var.set(f'TL missing — BR rel {br[0]},{br[1]}')
             else:
-                var.set('non calibrée')
+                var.set('uncalibrated')
 
     def _clear_vision_zones(self):
         self.nav_config['vision_zones']={}
         self._save_nav_config(); self._refresh_vision_labels()
-        self.log('Calibration visuelle : zones pseudo / X-Y / puissance effacées.')
+        self.log('Visual calibration: name / X-Y / power zones cleared.')
 
     def _capture_vision_corner(self,zone,corner,label):
         if pyautogui is None:
-            messagebox.showerror('Dépendance manquante','pyautogui n’est pas installé. Lance INSTALL_DEPENDENCIES.bat puis redémarre.'); return
+            messagebox.showerror('Missing Dependency','pyautogui is not installed. Run INSTALL_DEPENDENCIES.bat then restart.'); return
         if not self.nav_config.get('window'):
-            messagebox.showwarning('Fenêtre WOS non liée','Calibre d’abord au moins un des 5 points de navigation dans la fenêtre WOS.'); return
-        messagebox.showinfo('Calibration visuelle',f'Après OK tu as 3 secondes pour placer la souris sur :\n{label}\n\nLa plaque joueur doit être ouverte. Ne clique pas.')
+            messagebox.showwarning('WOS Window Not Linked','Calibrate at least one of the 5 navigation points in the WOS window first.'); return
+        messagebox.showinfo('Visual Calibration',f'After OK you have 3 seconds to place the mouse on:\n{label}\n\nThe player card must be open. Do not click.')
         def worker():
             time.sleep(3)
             p=pyautogui.position(); hwnd=self._win32_root_from_point(p.x,p.y); inf=self._win32_window_info(hwnd)
             if not inf:
-                self.root.after(0,lambda:messagebox.showerror('Calibration visuelle','Impossible d’identifier la fenêtre sous le curseur.')); return
+                self.root.after(0,lambda:messagebox.showerror('Visual Calibration','Cannot identify the window under the cursor.')); return
             existing=self.nav_config.get('window') or {}
             if existing and (existing.get('class')!=inf['class'] or existing.get('title')!=inf['title']):
-                msg=f"Le point visuel est sur une autre fenêtre : {inf['title'] or inf['class']}\nFenêtre liée : {existing.get('title') or existing.get('class')}\n\nRecommence dans WOS."
-                self.root.after(0,lambda m=msg:messagebox.showerror('Calibration visuelle WOS',m)); return
+                msg=f"The visual point is on another window : {inf['title'] or inf['class']}\nLinked window : {existing.get('title') or existing.get('class')}\n\nTry again in WOS."
+                self.root.after(0,lambda m=msg:messagebox.showerror('Visual Calibration WOS',m)); return
             relx=int(p.x-inf['left']); rely=int(p.y-inf['top'])
             zones=self.nav_config.setdefault('vision_zones',{})
             z=zones.setdefault(zone,{})
             z[corner]=[relx,rely]
-            # Si les deux coins existent mais sont inversés, on normalise immédiatement.
+            # If both corners exist but are reversed, normalize immediately.
             if isinstance(z.get('tl'),list) and isinstance(z.get('br'),list):
                 a,b=z['tl'],z['br']; z['tl']=[min(a[0],b[0]),min(a[1],b[1])]; z['br']=[max(a[0],b[0]),max(a[1],b[1])]
             self._save_nav_config()
             self.root.after(0,self._refresh_vision_labels)
-            self.log(f'Calibration visuelle: {zone}/{corner} = rel {relx},{rely}')
+            self.log(f'Visual Calibration: {zone}/{corner} = rel {relx},{rely}')
         threading.Thread(target=worker,daemon=True).start()
 
     def _vision_zones_ready(self,show=False):
@@ -808,59 +875,59 @@ class App:
             if not (isinstance(tl,list) and len(tl)==2 and isinstance(br,list) and len(br)==2 and br[0]-tl[0]>=20 and br[1]-tl[1]>=12):
                 missing.append(k)
         if missing and show:
-            messagebox.showwarning('Calibration visuelle incomplète','Calibre les zones de plaque avant le scan : '+', '.join(missing)+'\n\nOuvre une plaque joueur STANDARD et calibre le coin HG puis BD de chaque zone.')
+            messagebox.showwarning('Incomplete Visual Calibration','Calibrate the plate zones before scanning: '+', '.join(missing)+'\n\nOpen a standard player card and calibrate the TL then BR corner of each zone.')
         return not missing
 
     def _capture_nav_point(self,key,label):
         if pyautogui is None:
-            messagebox.showerror('Dépendance manquante','pyautogui n’est pas installé. Lance INSTALL_DEPENDENCIES.bat puis redémarre.'); return
-        messagebox.showinfo('Calibration',f'Après OK tu as 3 secondes pour placer la souris sur :\n{label}\n\nPlace bien le curseur DANS la fenêtre WOS. Ne clique pas.')
+            messagebox.showerror('Missing Dependency','pyautogui is not installed. Run INSTALL_DEPENDENCIES.bat then restart.'); return
+        messagebox.showinfo('Calibration',f'After OK you have 3 seconds to place the mouse on:\n{label}\n\nPlace the cursor INSIDE the WOS window. Do not click.')
         def worker():
             time.sleep(3)
             p=pyautogui.position(); hwnd=self._win32_root_from_point(p.x,p.y); inf=self._win32_window_info(hwnd)
             if not inf:
-                self.root.after(0,lambda:messagebox.showerror('Calibration','Impossible d’identifier la fenêtre sous le curseur.'))
+                self.root.after(0,lambda:messagebox.showerror('Calibration','Cannot identify the window under the cursor.'))
                 return
             existing=self.nav_config.get('window') or {}
-            # Le premier point lie la fenêtre. Les suivants doivent appartenir à la même fenêtre.
+            # The first point binds the window. Subsequent ones must belong to the same window.
             if existing and (existing.get('class')!=inf['class'] or existing.get('title')!=inf['title']):
-                msg=f"Le point est sur une autre fenêtre : {inf['title'] or inf['class']}\nFenêtre liée : {existing.get('title') or existing.get('class')}\n\nRecommence la calibration dans WOS."
+                msg=f"The point is on another window: {inf['title'] or inf['class']}\nLinked window: {existing.get('title') or existing.get('class')}\n\nTry again inside WOS."
                 self.root.after(0,lambda m=msg:messagebox.showerror('Calibration WOS',m)); return
             self.nav_config['window']={'title':inf['title'],'class':inf['class']}
             self.nav_config['coordinate_mode']='window-relative'; self._wos_hwnd=inf['hwnd']
             relx=int(p.x-inf['left']); rely=int(p.y-inf['top'])
             self.nav_config.setdefault('points',{})[key]=[relx,rely]; self._save_nav_config()
             self.root.after(0,self._refresh_nav_labels)
-            self.log(f"Calibration WOS: {label} = rel {relx},{rely} | fenêtre={inf['title']!r} rect=({inf['left']},{inf['top']},{inf['right']},{inf['bottom']})")
+            self.log(f"WOS Calibration: {label} = rel {relx},{rely} | window={inf['title']!r} rect=({inf['left']},{inf['top']},{inf['right']},{inf['bottom']})")
         threading.Thread(target=worker,daemon=True).start()
 
     def _refresh_alliance_combo(self):
         try:
             kid=int(self.kid.get().strip()); tags=self.db.alliance_tags(kid)
         except Exception: tags=[]
-        vals=['TOUTES']+tags
+        vals=['ALL']+tags
         if hasattr(self,'nav_combo'): self.nav_combo['values']=vals
         if hasattr(self,'verify_combo'): self.verify_combo['values']=tags
-        if getattr(self,'nav_alliance',None) and self.nav_alliance.get() not in vals:self.nav_alliance.set('TOUTES')
+        if getattr(self,'nav_alliance',None) and self.nav_alliance.get() not in vals:self.nav_alliance.set('ALL')
         if tags and getattr(self,'verify_alliance',None) and self.verify_alliance.get() not in tags:self.verify_alliance.set(tags[0])
     def _nav_ready(self):
         if pyautogui is None:
-            messagebox.showerror('Navigation PC','pyautogui est absent. Lance INSTALL_DEPENDENCIES.bat.'); return False
+            messagebox.showerror('Navigation PC','pyautogui is not installed. Run INSTALL_DEPENDENCIES.bat.'); return False
         pts=self.nav_config.get('points',{})
         miss=[k for k in ('coord','x','y','go','city') if k not in pts]
         if miss:
-            messagebox.showwarning('Calibration incomplète','Calibre d’abord : '+', '.join(miss)); return False
+            messagebox.showwarning('Incomplete Calibration','Calibre d’abord : '+', '.join(miss)); return False
         if self.nav_config.get('coordinate_mode')!='window-relative' or not self.nav_config.get('window'):
-            messagebox.showwarning('Nouvelle calibration requise','Cette version utilise une calibration relative à la fenêtre WOS. Refais les 5 points une fois.'); return False
+            messagebox.showwarning('New Calibration Required','This version uses calibration relative to the WOS window. Redo the 5 calibration points once.'); return False
         inf=self._resolve_wos_window(quiet=True)
         if not inf:
-            messagebox.showerror('Fenêtre WOS introuvable','La fenêtre WOS liée à la calibration est introuvable. Ouvre WOS puis recalibre un point.'); return False
+            messagebox.showerror('WOS Window Not Found','The WOS window linked to calibration was not found. Open WOS then recalibrate a point.'); return False
         if inf.get('minimized'):
-            messagebox.showerror('Fenêtre WOS minimisée','Restaure la fenêtre WOS avant de lancer la navigation.'); return False
+            messagebox.showerror('WOS Window Minimized','Restore the WOS window before starting navigation.'); return False
         return True
     def _clipboard_set_text(self,text):
-        # WOS PC n'accepte pas toujours correctement pyautogui.write() dans ses champs
-        # personnalisés. On passe donc par le presse-papiers Windows + Ctrl+V.
+        # WOS PC does not always correctly accept pyautogui.write() in its custom fields.
+        # We go through the Windows clipboard + Ctrl+V.
         if os.name!='nt':
             return False
         try:
@@ -882,11 +949,11 @@ class App:
         except Exception:
             return False
     def _direct_key_sequence(self, keys):
-        """Envoie des frappes Windows en scan-codes (SendInput).
+        """Send Windows keystrokes via scan-codes (SendInput).
 
-        Le client PC WOS utilise des contrôles DirectX/custom qui peuvent ignorer
+        The WOS PC client uses DirectX/custom controls that may ignore
         pyautogui.write(), Ctrl+V et les messages clavier classiques. Les scan-codes
-        sont injectés au niveau entrée Windows, comme un vrai clavier.
+        are injected at the Windows input level, like a real keyboard.
         """
         if os.name != 'nt':
             return False
@@ -937,14 +1004,14 @@ class App:
                     key(sc, False); time.sleep(.035); key(sc, True); time.sleep(.035)
             return True
         except Exception as exc:
-            try:self.log(f'Navigation PC: SendInput indisponible ({exc})')
+            try:self.log(f'Navigation PC: SendInput unavailable ({exc})')
             except Exception:pass
             return False
 
     def _replace_game_field(self,point,value):
         # V4.0.28 : Google Play Games/WOS ne reconnait pas Ctrl+A dans ces champs.
         # Les coordonnees WOS tiennent sur 4 chiffres maximum : on efface donc
-        # explicitement l'ancienne valeur avec 4 Backspace, puis on saisit les chiffres.
+        # explicitly the old value with 4 Backspace, then we type the digits.
         # Les frappes passent toujours par SendInput scan-codes ; fallback pyautogui.
         pyautogui.click(*point,clicks=2,interval=0.10); time.sleep(.22)
         text=str(int(value))
@@ -958,19 +1025,19 @@ class App:
         pyautogui.click(*self._abs_nav_point('coord')); time.sleep(.65)
         self._replace_game_field(self._abs_nav_point('x'),x)
         self._replace_game_field(self._abs_nav_point('y'),y)
-        # Retire le focus du champ avant validation : certains clients WOS
-        # n'appliquent la valeur qu'après perte de focus.
+        # Remove field focus before validation: some WOS clients
+        # only apply the value after losing focus.
         pyautogui.press('tab'); time.sleep(.12)
         pyautogui.click(*self._abs_nav_point('go')); time.sleep(.25)
 
     def _open_target_city(self):
-        """Clique réellement la ville après le déplacement de carte.
+        """Actually click the city after the map move.
 
-        Se déplacer aux X/Y ne force pas toujours le client à demander la fiche du
-        joueur. Le clic sur la ville déclenche les réponses profil/ville dont le
-        collecteur a besoin pour WOS ID et puissance.
+        Moving to X/Y doesn't always force the client to request the
+        player's card. Clicking the city triggers the profile/city responses the
+        collector needs for WOS ID and power.
         """
-        # Laisse le temps à la carte de recentrer et d'afficher la ville.
+        # Allow time for the map to recenter and display the city.
         self._focus_wos_window(); time.sleep(1.15)
         pyautogui.click(*self._abs_nav_point('city'))
         time.sleep(.45)
@@ -980,9 +1047,9 @@ class App:
         self._open_target_city()
 
     def _close_city_panel(self):
-        # V4.0.33 : Echap est envoye par SendInput avec le scan-code materiel 0x01.
-        # On n'utilise plus de point de calibration de fermeture : cela évite
-        # de cliquer accidentellement sur une autre ville selon la position de la carte.
+        # V4.0.33: Escape is sent by SendInput with hardware scan-code 0x01.
+        # We no longer use a close calibration point: this avoids
+        # accidentally clicking another city depending on map position.
         try:
             self._focus_wos_window()
             if not self._direct_key_sequence(['esc']):
@@ -994,16 +1061,16 @@ class App:
             except Exception:
                 pass
     def _screen_power_fallback(self,row):
-        """Agent visuel V4.0.47 — lecture par zones calibrées.
+        """Visual agent V4.0.47 — reading by calibrated zones.
 
-        Plus de crop global autour de la ville : pseudo, X/Y et puissance sont lus
-        dans trois rectangles fixes calibrés relativement à la fenêtre WOS.
-        Cela évite de confondre bâtiments, boutons ou autres textes de l'interface.
+        No more global crop around the city: name, X/Y and power are read
+        in three fixed rectangles calibrated relative to the WOS window.
+        This avoids confusing buildings, buttons or other interface text.
         """
         try:
             if not getattr(self,'screen_ocr_enabled',None) or not self.screen_ocr_enabled.get(): return None
             if not self._vision_zones_ready(False):
-                self.log(f'VISION A{row["atlas_id"]}: zones visuelles non calibrées; aucune donnée visuelle promue.')
+                self.log(f'VISION A{row["atlas_id"]}: visual zones uncalibrated; no visual data promoted.')
                 return None
             full_img,win=self._capture_wos_window_image(); sw,sh=full_img.size
             odir=SESSIONS_DIR/(self.session_id or 'manual')/'vision'; odir.mkdir(parents=True,exist_ok=True)
@@ -1018,7 +1085,7 @@ class App:
                 cmd=[sys.executable,str(helper),str(shot),str(row.get('pseudo_display') or ''),str(int(row.get('atlas_x') or -1)),str(int(row.get('atlas_y') or -1)),str(int(state.get('wos_id') or 0)),str(int(row['atlas_id']))]
                 cp=subprocess.run(cmd,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=35,creationflags=(0x08000000 if os.name=='nt' else 0))
                 if cp.returncode!=0:
-                    raise RuntimeError(f'{key}: helper erreur {cp.returncode}: {(cp.stderr or "").strip()[:350]}')
+                    raise RuntimeError(f'{key}: helper error {cp.returncode}: {(cp.stderr or "").strip()[:350]}')
                 data=json.loads((cp.stdout or '').strip() or '{}')
                 if data.get('_error'): raise RuntimeError(f'{key}: {data.get("_error")}')
                 return data,shot
@@ -1036,9 +1103,9 @@ class App:
                 'power_candidates':wd.get('power_candidates') or [],
                 'text':f"PSEUDO[{pd.get('text') or ''}] | XY[{cd.get('text') or ''}] | POWER[{wd.get('text') or ''}]"
             }
-            # On ne promeut une puissance visuelle que si l'identité ET la localisation
-            # ont été confirmées dans leurs zones dédiées. store_vision_observation
-            # applique cette règle et conserve la trace des lectures partielles.
+            # We only promote a visual power if identity AND location
+            # have been confirmed in their dedicated zones. store_vision_observation
+            # applies this rule and keeps a trace of partial readings.
             verdict=self.db.store_vision_observation(row,self.session_id,data,str(wshot),promote=not getattr(self,'clean_vision_mode',False))
             obs=data.get('pseudo') or '?'; score=float(data.get('pseudo_score') or 0.0); p=data.get('power')
             xy=f"X{data.get('x')} Y{data.get('y')}"
@@ -1052,50 +1119,50 @@ class App:
         if not self._nav_ready(): return
         kid=self.get_kid();
         if kid is None:return
-        tag=None if self.nav_alliance.get()=='TOUTES' else self.nav_alliance.get(); rows=self.db.navigation_targets(kid,tag,False)
-        if not rows: messagebox.showinfo('Test','Aucune coordonnée Atlas disponible.'); return
+        tag=None if self.nav_alliance.get()=='ALL' else self.nav_alliance.get(); rows=self.db.navigation_targets(kid,tag,False)
+        if not rows: messagebox.showinfo('Test','No Atlas coordinates available.'); return
         r=rows[0]
         try:
             self._visit_xy(r['atlas_x'],r['atlas_y'])
             time.sleep(float(self.nav_dwell.get()))
             self._close_city_panel()
-            self.log(f"Test navigation + ouverture/fermeture ville -> {r['pseudo_display']} X{r['atlas_x']} Y{r['atlas_y']}")
+            self.log(f"Navigation test + city open/close -> {r['pseudo_display']} X{r['atlas_x']} Y{r['atlas_y']}")
         except Exception as e: messagebox.showerror('Navigation PC',str(e))
     def _ensure_nav_capture(self,kid,mode):
         if self.live.running:return
         sid=f"{mode}_{kid}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"; self.engine.reset(sid); self.engine.set_protocol_discovery(True); self.session_id=sid; self.capture_path=SESSIONS_DIR/f'{sid}.pcap'; self.db.start_session(sid,mode,str(self.capture_path)); self.live.start('AUTO',self.capture_path); self.btn_stop.config(state='normal')
     def start_pc_map_scan(self):
-        if self.nav_thread and self.nav_thread.is_alive(): messagebox.showwarning('Navigation PC','Une navigation est déjà active.'); return
+        if self.nav_thread and self.nav_thread.is_alive(): messagebox.showwarning('Navigation PC','Navigation is already active.'); return
         if not self._nav_ready(): return
         if not self._vision_zones_ready(True): return
         kid=self.get_kid();
         if kid is None:return
-        tag=None if self.nav_alliance.get()=='TOUTES' else self.nav_alliance.get(); rows=self.db.navigation_targets(kid,tag,bool(self.nav_missing.get()))
-        if not rows: messagebox.showinfo('Scan MAP','Aucun joueur correspondant avec coordonnées Atlas.'); return
+        tag=None if self.nav_alliance.get()=='ALL' else self.nav_alliance.get(); rows=self.db.navigation_targets(kid,tag,bool(self.nav_missing.get()))
+        if not rows: messagebox.showinfo('MAP Scan','No matching player with Atlas coordinates.'); return
         self.nav_config['dwell']=float(self.nav_dwell.get()); self._save_nav_config(); self.nav_stop.clear()
         try:self._ensure_nav_capture(kid,'pc-map-scan')
         except Exception as e: messagebox.showerror('Capture WOS',str(e)); return
         self.nav_thread=threading.Thread(target=self._scan_worker,args=(rows,),daemon=True); self.nav_thread.start()
     def _scan_worker(self,rows):
         total=len(rows); resolved=0
-        self.log(f'Scan MAP automatique : {total} position(s) à visiter. Déplace la souris dans le coin haut-gauche pour arrêt d’urgence PyAutoGUI.')
+        self.log(f"Automatic MAP Scan: {total} position(s) to visit. Move mouse to top-left corner for PyAutoGUI emergency stop.")
         try:
             for i,r in enumerate(rows,1):
                 if self.nav_stop.is_set():break
-                before=self.db.player_state(r['atlas_id']); trace_start=now(); raw_start=self.db.raw_protocol_max_id(self.session_id); self._visit_xy(r['atlas_x'],r['atlas_y']); self.events.put(('navprogress',f"{i}/{total} — {r['pseudo_display']} [{r['alliance_tag']}] X{r['atlas_x']} Y{r['atlas_y']} — ville ouverte")); time.sleep(float(self.nav_dwell.get()))
+                before=self.db.player_state(r['atlas_id']); trace_start=now(); raw_start=self.db.raw_protocol_max_id(self.session_id); self._visit_xy(r['atlas_x'],r['atlas_y']); self.events.put(('navprogress',f"{i}/{total} — {r['pseudo_display']} [{r['alliance_tag']}] X{r['atlas_x']} Y{r['atlas_y']} — city opened")); time.sleep(float(self.nav_dwell.get()))
                 self._screen_power_fallback(r)
                 after=self.db.player_state(r['atlas_id'])
                 if before and (before.get('wos_id') is None or before.get('power') is None) and after and after.get('wos_id') is not None and after.get('power') is not None: resolved+=1
                 self._close_city_panel()
                 trace_file,nframes,ops=self.db.visit_trace_finish(self.session_id,r,trace_start,raw_start,SESSIONS_DIR/self.session_id/'visits')
-                self.log(f'Trace visite A{r["atlas_id"]}: {nframes} trame(s) | {ops} | {trace_file}')
-                if i%5==0:self.events.put(('refresh','Scan MAP en cours'))
-        except Exception as e:self.log(f'Scan MAP interrompu: {e}')
+                self.log(f'Visit trace A{r["atlas_id"]}: {nframes} trame(s) | {ops} | {trace_file}')
+                if i%5==0:self.events.put(('refresh','MAP Scan in progress'))
+        except Exception as e:self.log(f'MAP Scan interrupted: {e}')
         finally:
-            self.events.put(('navprogress',f'Terminé / arrêté — {resolved} compte(s) devenus complets'))
-            self.events.put(('refresh','Scan MAP terminé'))
+            self.events.put(('navprogress',f'Finished / stopped — {resolved} account(s) now complete'))
+            self.events.put(('refresh','MAP Scan complete'))
     def stop_pc_navigation(self):
-        self.nav_stop.set(); self.nav_progress.set('Arrêt demandé…'); self.log('Arrêt navigation PC demandé.')
+        self.nav_stop.set(); self.nav_progress.set('Stop requested...'); self.log('PC navigation stop requested.')
 
     def _clean_db_path(self):
         return DATA_DIR/'clean_vision.sqlite3'
@@ -1129,20 +1196,20 @@ class App:
         c.commit(); c.close(); return status
 
     def start_clean_vision_benchmark(self):
-        if self.nav_thread and self.nav_thread.is_alive(): messagebox.showwarning('Vision propre','Une navigation est déjà active.'); return
+        if self.nav_thread and self.nav_thread.is_alive(): messagebox.showwarning('Clean Vision','Navigation is already active.'); return
         if not self._nav_ready() or not self._vision_zones_ready(True): return
         kid=self.get_kid(); tag=self.verify_alliance.get().strip()
         if kid is None or not tag: return
         rows=self.db.navigation_targets(kid,tag,False)
-        if not rows: messagebox.showwarning('Vision propre',f'Aucun membre [{tag}] avec coordonnées Atlas.'); return
-        if not messagebox.askyesno('VISION PROPRE',f'Créer une BASE VIERGE pour [{tag}] avec uniquement Atlas ID + pseudo + localisation, puis visiter {len(rows)} villes ?\n\nAucune ancienne puissance/WOS ID ne sera copiée dans cette base.'): return
+        if not rows: messagebox.showwarning('Clean Vision',f'No members [{tag}] with Atlas coordinates.'); return
+        if not messagebox.askyesno('CLEAN VISION',f'Create a CLEAN DATABASE for [{tag}] with only Atlas ID + name + location, then visit {len(rows)} villes ?\n\nAucune ancienne puissance/WOS ID ne sera copiée dans cette base.'): return
         path=self._clean_init(kid,tag,rows); self.clean_vision_mode=True; self.nav_stop.clear()
         try:
             if self.live.running:self.stop_live()
             self._ensure_nav_capture(kid,'clean-vision')
         except Exception as e:
             self.clean_vision_mode=False; messagebox.showerror('Capture WOS',str(e)); return
-        sid=self.session_id; self.verify_status.set(f'[VISION PROPRE {tag}] 0/{len(rows)} — {path.name}')
+        sid=self.session_id; self.verify_status.set(f'[CLEAN VISION {tag}] 0/{len(rows)} — {path.name}')
         self.nav_thread=threading.Thread(target=self._clean_vision_worker,args=(sid,tag,rows),daemon=True); self.nav_thread.start()
 
     def _clean_vision_worker(self,sid,tag,rows):
@@ -1154,26 +1221,26 @@ class App:
                 st=self._clean_store_latest(sid,r)
                 if st=='VISION_VERIFIED': ok+=1
                 else: partial+=1
-                self.events.put(('verifystatus',f'[VISION PROPRE {tag}] {i}/{len(rows)} | complets {ok} | partiels {partial}'))
+                self.events.put(('verifystatus',f'[CLEAN VISION {tag}] {i}/{len(rows)} | complets {ok} | partial {partial}'))
         except Exception as e:
-            self.log(f'VISION PROPRE [{tag}] interrompue: {type(e).__name__}: {e}')
+            self.log(f'CLEAN VISION [{tag}] interrupted: {type(e).__name__}: {e}')
         finally:
             self.clean_vision_mode=False
-            self.events.put(('verifystatus',f'[VISION PROPRE {tag}] terminé | complets {ok} | partiels {partial} | DB: {self._clean_db_path()}'))
+            self.events.put(('verifystatus',f'[CLEAN VISION {tag}] done | complete {ok} | partial {partial} | DB: {self._clean_db_path()}'))
 
     def open_clean_vision_results(self):
         """Affiche directement le contenu de clean_vision.sqlite3 dans l'application.
 
-        La base Clean Vision reste isolée de la base principale. Cette fenêtre est
-        uniquement une vue SQL + outils de contrôle/export ; elle ne promeut rien.
+        The Clean Vision database remains isolated from the main database. This window is
+        only an SQL view + control/export tools; it promotes nothing.
         """
         path=self._clean_db_path()
         if not path.exists():
-            messagebox.showinfo('Vision propre','Aucune base Vision propre créée.')
+            messagebox.showinfo('Clean Vision','No Clean Vision database created.')
             return
 
         win=tk.Toplevel(self)
-        win.title(f'Résultats Clean Vision — SQL — V{APP_VERSION}')
+        win.title(f'Clean Vision Results — SQL — V{APP_VERSION}')
         win.geometry('1500x760')
         win.minsize(1050,520)
 
@@ -1181,7 +1248,7 @@ class App:
         summary=tk.StringVar(value='Chargement…')
         ttk.Label(top,textvariable=summary,font=('TkDefaultFont',10,'bold')).pack(side='left',padx=(0,14))
         filter_var=tk.StringVar(value='TOUS')
-        ttk.Label(top,text='Filtre :').pack(side='left')
+        ttk.Label(top,text='Filter:').pack(side='left')
         filter_box=ttk.Combobox(top,textvariable=filter_var,state='readonly',width=18,
                                 values=('TOUS','VISION_VERIFIED','VISION_PARTIAL','VISION_CONFLICT','NO_VISION'))
         filter_box.pack(side='left',padx=4)
@@ -1192,8 +1259,8 @@ class App:
             ('atlas','Atlas ID',105,'center'),('alliance','Alliance',75,'center'),
             ('pseudo_atlas','Pseudo Atlas',190,'w'),('loc_atlas','LOC Atlas',105,'center'),
             ('pseudo_vision','Pseudo Vision',190,'w'),('score','Score',70,'center'),
-            ('loc_vision','LOC Vision',105,'center'),('power','Puissance Vision',130,'e'),
-            ('status','Statut Vision',145,'center'),('seen','Vu le',165,'center')
+            ('loc_vision','LOC Vision',105,'center'),('power','Power Vision',130,'e'),
+            ('status','Vision Status',145,'center'),('seen','Seen on',165,'center')
         ]
         for key,label,width,anchor in spec:
             tree.heading(key,text=label); tree.column(key,width=width,anchor=anchor,stretch=(key in ('pseudo_atlas','pseudo_vision')))
@@ -1232,7 +1299,7 @@ class App:
                 vals=(r.get('atlas_id'),r.get('alliance_tag') or '',r.get('pseudo_atlas') or '',loc_a,
                       r.get('pseudo_vision') or '',stxt,loc_v,ptxt,st,r.get('seen_at') or '')
                 iid=tree.insert('', 'end', values=vals); r['_iid']=iid; cache.append(r)
-            summary.set(f'Total {total}  |  Vérifiés {verified}  |  Partiels {partial}  |  Conflits {conflict}  |  Non vus {novision}')
+            summary.set(f'Total {total}  |  Verified {verified}  |  Partial {partial}  |  Conflicts {conflict}  |  Unseen {novision}')
 
         def selected_row():
             sel=tree.selection()
@@ -1245,7 +1312,7 @@ class App:
             if not r: return
             shot=r.get('screenshot')
             if not shot:
-                messagebox.showinfo('Capture Vision','Aucune capture enregistrée pour cette ligne.',parent=win); return
+                messagebox.showinfo('Capture Vision','No capture recorded for this row.',parent=win); return
             q=Path(shot)
             if not q.exists():
                 messagebox.showwarning('Capture Vision',f'Capture introuvable :\n{q}',parent=win); return
@@ -1254,7 +1321,7 @@ class App:
 
         def export_csv():
             import sqlite3
-            dest=filedialog.asksaveasfilename(parent=win,title='Exporter résultats Vision',defaultextension='.csv',
+            dest=filedialog.asksaveasfilename(parent=win,title='Export Vision Results',defaultextension='.csv',
                                               filetypes=[('CSV','*.csv')],initialfile='clean_vision_results.csv')
             if not dest: return
             c=sqlite3.connect(str(path)); c.row_factory=sqlite3.Row
@@ -1265,26 +1332,26 @@ class App:
             names=list(rows[0].keys()) if rows else ['atlas_id','alliance_tag','pseudo_atlas','x_atlas','y_atlas','seen_at','pseudo_vision','pseudo_score','x_vision','y_vision','power_vision','status','screenshot','raw_text']
             with open(dest,'w',newline='',encoding='utf-8-sig') as fh:
                 w=csv.writer(fh,delimiter=';'); w.writerow(names); [w.writerow([r[n] for n in names]) for r in rows]
-            messagebox.showinfo('Export Vision',f'Export créé :\n{dest}',parent=win)
+            messagebox.showinfo('Export Vision',f'Export created:\n{dest}',parent=win)
 
         btns=ttk.Frame(top); btns.pack(side='right')
-        ttk.Button(btns,text='Actualiser',command=load_rows).pack(side='left',padx=3)
-        ttk.Button(btns,text='Ouvrir capture',command=open_shot).pack(side='left',padx=3)
-        ttk.Button(btns,text='Exporter CSV',command=export_csv).pack(side='left',padx=3)
-        ttk.Button(btns,text='Ouvrir dossier DB',command=lambda: os.startfile(str(path.parent))).pack(side='left',padx=3)
+        ttk.Button(btns,text='Refresh',command=load_rows).pack(side='left',padx=3)
+        ttk.Button(btns,text='Open Capture',command=open_shot).pack(side='left',padx=3)
+        ttk.Button(btns,text='Export CSV',command=export_csv).pack(side='left',padx=3)
+        ttk.Button(btns,text='Open DB Folder',command=lambda: os.startfile(str(path.parent))).pack(side='left',padx=3)
         filter_box.bind('<<ComboboxSelected>>',load_rows)
         tree.bind('<Double-1>',open_shot)
         load_rows()
 
     def start_alliance_verification(self):
-        if self.nav_thread and self.nav_thread.is_alive(): messagebox.showwarning('Vérification','Une navigation est déjà active.'); return
+        if self.nav_thread and self.nav_thread.is_alive(): messagebox.showwarning('Verification','Navigation is already active.'); return
         if not self._nav_ready():return
         if not self._vision_zones_ready(True):return
         kid=self.get_kid(); tag=self.verify_alliance.get().strip()
         if kid is None or not tag:return
         rows=self.db.navigation_targets(kid,tag,False)
-        if not rows: messagebox.showwarning('Vérification',f'Aucun membre [{tag}] avec coordonnées Atlas.'); return
-        if not messagebox.askyesno('Vérifier alliance',f'Visiter automatiquement {len(rows)} membre(s) de [{tag}] ?\n\nWOS doit être ouvert et la carte accessible.'):return
+        if not rows: messagebox.showwarning('Verification',f'No members [{tag}] with Atlas coordinates.'); return
+        if not messagebox.askyesno('Verify Alliance',f'Auto-visit {len(rows)} member(s) of [{tag}] ?\n\nWOS must be open and the mape accessible.'):return
         self.nav_config['dwell']=float(self.nav_dwell.get()); self._save_nav_config(); self.nav_stop.clear()
         try:
             if self.live.running:self.stop_live()
@@ -1298,9 +1365,9 @@ class App:
             for i,r in enumerate(rows,1):
                 if self.nav_stop.is_set():break
                 trace_start=now(); raw_start=self.db.raw_protocol_max_id(sid)
-                self._visit_xy(r['atlas_x'],r['atlas_y']); time.sleep(float(self.nav_dwell.get())); self._screen_power_fallback(r); visited+=1; self.events.put(('verifystatus',f'[{tag}] {i}/{len(rows)} — {r["pseudo_display"]} — ville ouverte')); self._close_city_panel()
+                self._visit_xy(r['atlas_x'],r['atlas_y']); time.sleep(float(self.nav_dwell.get())); self._screen_power_fallback(r); visited+=1; self.events.put(('verifystatus',f'[{tag}] {i}/{len(rows)} — {r["pseudo_display"]} — city opened')); self._close_city_panel()
                 trace_file,nframes,ops=self.db.visit_trace_finish(sid,r,trace_start,raw_start,SESSIONS_DIR/sid/'visits')
-                self.log(f'Trace visite A{r["atlas_id"]}: {nframes} trame(s) | {ops} | {trace_file}')
+                self.log(f'Visit trace A{r["atlas_id"]}: {nframes} trame(s) | {ops} | {trace_file}')
             # allow last response to arrive
             if not self.nav_stop.is_set():time.sleep(1.0)
             for r in rows[:visited]:
@@ -1311,7 +1378,7 @@ class App:
             self.db.verification_finish(run_id,visited,seen,ok,missing,conflicts,'STOPPED' if self.nav_stop.is_set() else 'DONE')
             self.events.put(('verifydone',(run_id,tag,visited,seen,ok,missing,conflicts)))
         except Exception as e:
-            self.db.verification_finish(run_id,visited,seen,ok,missing,conflicts,'ERROR'); self.log(f'Verification [{tag}] interrompue: {e}'); self.events.put(('verifystatus',f'[{tag}] ERREUR: {e}'))
+            self.db.verification_finish(run_id,visited,seen,ok,missing,conflicts,'ERROR'); self.log(f'Verification [{tag}] interrupted: {e}'); self.events.put(('verifystatus',f'[{tag}] ERREUR: {e}'))
     def _show_verification_results(self,run_id):
         for x in self.verify_tree.get_children():self.verify_tree.delete(x)
         for r in self.db.verification_results_for_run(run_id):
@@ -1321,7 +1388,7 @@ class App:
         text=(text or '').strip()
         if not text:
             return ''
-        # Accepte soit la valeur Cookie brute, soit "Copy as cURL" (CMD/PowerShell).
+        # Accepts either a raw Cookie value or "Copy as cURL" (CMD/PowerShell).
         candidates=[]
         for pat in [r'-b\s+\^?"([^"\r\n]+)\^?"', r'--cookie\s+\^?"([^"\r\n]+)\^?"', r'cookie:\s*([^\r\n]+)']:
             m=re.search(pat,text,re.I)
@@ -1341,9 +1408,9 @@ class App:
         return ''
 
     def configure_atlas_session(self):
-        win=tk.Toplevel(self.root); win.title('Session WOS Atlas'); win.geometry('760x360'); win.transient(self.root); win.grab_set()
-        ttk.Label(win,text='Colle ici Copy as cURL de WOS Atlas, ou uniquement les cookies wos_at + wos_rt.').pack(anchor='w',padx=12,pady=(12,4))
-        ttk.Label(win,text='La session reste uniquement en mémoire pendant cette exécution et n’est pas enregistrée dans le ZIP ou la base.').pack(anchor='w',padx=12,pady=(0,8))
+        win=tk.Toplevel(self.root); win.title('WOS Atlas Session'); win.geometry('760x360'); win.transient(self.root); win.grab_set()
+        ttk.Label(win,text='Paste Copy as cURL from WOS Atlas here, or just wos_at + wos_rt cookies.').pack(anchor='w',padx=12,pady=(12,4))
+        ttk.Label(win,text='The session remains in memory only during this execution and is not saved to ZIP or database.').pack(anchor='w',padx=12,pady=(0,8))
         txt=tk.Text(win,wrap='word',font=('Consolas',9),height=11); txt.pack(fill='both',expand=True,padx=12,pady=4)
         if self.atlas_cookie:
             txt.insert('1.0','wos_at=••••••; wos_rt=••••••')
@@ -1356,63 +1423,80 @@ class App:
                 win.destroy(); return
             cookie=self._extract_atlas_cookie(raw)
             if not cookie:
-                msg.set('Impossible de trouver wos_at et wos_rt dans ce texte.'); return
-            self.atlas_cookie=cookie; self.atlas_session_status.set('Atlas: session configurée'); self.log('Session WOS Atlas configurée (cookies chargés en mémoire, valeurs masquées).'); win.destroy()
+                msg.set('Cannot find wos_at and wos_rt in this text.'); return
+            self.atlas_cookie=cookie; self.atlas_session_status.set('Atlas: session configured'); self.log('WOS Atlas Session configured (cookies saved).'); 
+            try:
+                (BASE_DIR / 'atlas_cookies.txt').write_text(cookie, encoding='utf-8')
+            except Exception as e:
+                self.log(f'Failed to save cookies: {e}')
+            win.destroy()
         def clear():
-            self.atlas_cookie=''; self.atlas_session_status.set('Atlas: non connecté'); self.log('Session WOS Atlas effacée de la mémoire.'); win.destroy()
-        ttk.Button(bar,text='Valider',command=save).pack(side='left'); ttk.Button(bar,text='Effacer session',command=clear).pack(side='left',padx=6); ttk.Button(bar,text='Annuler',command=win.destroy).pack(side='right')
+            self.atlas_cookie=''; self.atlas_session_status.set('Atlas: not connected'); self.log('WOS Atlas Session cleared from memory.'); win.destroy()
+        ttk.Button(bar,text='Validate',command=save).pack(side='left'); ttk.Button(bar,text='Clear Session',command=clear).pack(side='left',padx=6); ttk.Button(bar,text='Cancel',command=win.destroy).pack(side='right')
 
     def get_kid(self):
         try:k=int(self.kid.get().strip()); assert k>0; return k
-        except Exception: messagebox.showerror('État invalide','Saisis un numéro d’État WOS valide.'); return None
+        except Exception: messagebox.showerror('Invalid State','Enter a valid WOS State number.'); return None
     def _poll(self):
         try:
             while True:
                 kind,data=self.events.get_nowait()
                 if kind=='log': self.logbox.insert('end',f'[{datetime.now().strftime("%H:%M:%S")}] {data}\n'); self.logbox.see('end')
-                elif kind=='refresh': self.refresh(); self.status.set(data or 'Prêt')
+                elif kind=='refresh': self.refresh(); self.status.set(data or 'Ready')
                 elif kind=='navprogress': self.nav_progress.set(str(data))
                 elif kind=='verifystatus': self.verify_status.set(str(data))
                 elif kind=='verifydone':
-                    run_id,tag,visited,seen,ok,missing,conflicts=data; self.verify_status.set(f'[{tag}] visités {visited} | revus {seen} | OK {ok} | manquants {missing} | conflits {conflicts}'); self._show_verification_results(run_id); self.refresh()
+                    run_id,tag,visited,seen,ok,missing,conflicts=data; self.verify_status.set(f'[{tag}] visited {visited} | reviewed {seen} | OK {ok} | missing {missing} | conflits {conflicts}'); self._show_verification_results(run_id); self.refresh()
         except queue.Empty: pass
         self.root.after(120,self._poll)
     def start_atlas_sync(self):
         kid=self.get_kid()
         if kid is None or self.atlas_busy:return
         if not self.atlas_cookie:
-            messagebox.showwarning('Session WOS Atlas','Configure d’abord la session WOS Atlas avec le bouton « Session WOS Atlas » puis colle Copy as cURL de ton navigateur.'); self.configure_atlas_session(); return
-        self.atlas_busy=True; self.status.set(f'Import Atlas État {kid}...'); threading.Thread(target=self._atlas_worker,args=(kid,),daemon=True).start()
+            messagebox.showwarning('WOS Atlas Session','First configure the WOS Atlas session using the WOS Atlas Session button, then paste Copy as cURL de ton navigateur.'); self.configure_atlas_session(); return
+        self.atlas_busy=True; self.status.set(f'Atlas Import State {kid}...'); threading.Thread(target=self._atlas_worker,args=(kid,),daemon=True).start()
     def _atlas_worker(self,kid):
         client=AtlasClient(self.log,self.atlas_cookie); run_id=None
         try:
             with self.db.lock,self.db.conn: run_id=self.db.conn.execute('INSERT INTO atlas_sync_runs(kid,started_at,status) VALUES(?,?,?)',(kid,now(),'RUNNING')).lastrowid
             lead=client.leaderboard(kid)
             if not isinstance(lead,dict):
-                raise RuntimeError(f'ÉCHEC API ATLAS : impossible de récupérer la liste des alliances de l’État {kid}. Import annulé.')
+                raise RuntimeError(f"ATLAS API FAILURE: unable to retrieve alliance list for State {kid}. Import cancelled.")
             entries=lead.get('entries')
             if not isinstance(entries,list):
-                raise RuntimeError(f'ÉCHEC API ATLAS : réponse leaderboard invalide pour l’État {kid} (champ entries absent/invalide). Import annulé.')
-            self.log(f'Atlas État {kid}: {len(entries)} alliances trouvées.')
+                raise RuntimeError(f"ATLAS API FAILURE: invalid leaderboard response for State {kid} (entries field missing/invalid). Import cancelled.")
+            
+            # User Alliance Filter
+            target_alliance = self.var_alliance_filter.get().strip().upper()
+            if target_alliance:
+                entries = [a for a in entries if (a.get('abbr') or '').upper() == target_alliance]
+                if not entries:
+                    self.log(f"Atlas State {kid}: No alliance found matching '{target_alliance}'.")
+                    return
+            else:
+                entries = entries[:10] # Top 10 limit
+
+            self.log(f'Atlas State {kid}: {len(entries)} alliances found.')
             uids=[]
             for idx,a in enumerate(entries,1):
                 self.db.atlas_upsert_alliance(kid,a); payload=client.members(int(a['aid']), int(a.get('members') or 0))
                 if not isinstance(payload,dict):
-                    raise RuntimeError(f'ÉCHEC API ATLAS : impossible de récupérer les membres de {a.get("abbr") or a.get("aid")} (AID {a.get("aid")}).')
+                    raise RuntimeError(f'ATLAS API FAILURE: unable to retrieve members for {a.get("abbr") or a.get("aid")} (AID {a.get("aid")}).')
                 abbr=payload.get('abbr') or a.get('abbr') or '?'
                 if str(payload.get('viewerTier') or '').upper()=='ANONYMOUS':
-                    raise RuntimeError('AUTH WOS ATLAS : la session est absente ou expirée (viewerTier=ANONYMOUS). Recopie un nouveau « Copy as cURL » depuis ton navigateur connecté à WOS Atlas.')
+                    raise RuntimeError('WOS ATLAS AUTH: session is missing or expired (viewerTier=ANONYMOUS). Paste a new Copy as cURL from your browser logged into WOS Atlas.')
                 members=payload.get('members')
                 if not isinstance(members,list):
-                    raise RuntimeError(f'ÉCHEC API ATLAS : réponse /members invalide pour {abbr} (AID {a.get("aid")}).')
+                    raise RuntimeError(f'ATLAS API FAILURE: invalid /members response for {abbr} (AID {a.get("aid")}).')
                 expected=int(a.get('members') or payload.get('memberCount') or 0)
                 if expected>0 and not members:
-                    raise RuntimeError(f"ÉCHEC API ATLAS : {abbr} annonce {expected} membre(s), mais /members renvoie une liste vide après 3 tentatives. Import arrêté au lieu d'enregistrer 0 membre.")
+                    self.log(f"ATLAS API FAILED : {abbr} announces {expected} member(s), but /members returned empty. Skipping this alliance.")
+                    continue
                 for m in members:
                     if m.get('uid') is None or (m.get('kid') is not None and int(m.get('kid'))!=kid): continue
                     uids.append(self.db.atlas_upsert_member(kid,int(a['aid']),abbr,m))
-                self.log(f'[{idx}/{len(entries)}] {abbr}: {len(members)} membres')
-            uids=sorted(set(uids)); self.log(f'Atlas: {len(uids)} joueurs uniques. Historique + puissance...'); h_ok=p_ok=0
+                self.log(f'[{idx}/{len(entries)}] {abbr}: {len(members)} members')
+            uids=sorted(set(uids)); self.log(f'Atlas: {len(uids)} unique players. History + power...'); h_ok=p_ok=0
             enrich_errors=0
             for i,uid in enumerate(uids,1):
                 try:
@@ -1421,21 +1505,21 @@ class App:
                         self.db.atlas_store_history(uid,h); h_ok+=1
                 except Exception as e:
                     enrich_errors+=1
-                    self.log(f'Atlas history UID {uid}: erreur non bloquante: {e}')
+                    self.log(f'Atlas history UID {uid}: non-blocking error: {e}')
                 try:
                     p=client.power(uid)
                     if isinstance(p,dict):
                         self.db.atlas_store_power(uid,p); p_ok+=1
                 except Exception as e:
                     enrich_errors+=1
-                    self.log(f'Atlas power UID {uid}: erreur non bloquante: {e}')
-                if i%25==0:self.log(f'Joueurs enrichis {i}/{len(uids)} (erreurs non bloquantes: {enrich_errors})')
+                    self.log(f'Atlas power UID {uid}: non-blocking error: {e}')
+                if i%25==0:self.log(f'Players enriched {i}/{len(uids)} (non-blocking errors: {enrich_errors})')
             if enrich_errors:
-                self.log(f'Atlas: enrichissement terminé avec {enrich_errors} erreur(s) non bloquante(s); les joueurs valides ont été conservés.')
+                self.log(f'Atlas: enrichment finished with {enrich_errors} non-blocking error(s); valid players were retained.')
             with self.db.lock,self.db.conn:self.db.conn.execute('UPDATE atlas_sync_runs SET finished_at=?,alliances=?,players=?,histories=?,powers=?,status=? WHERE id=?',(now(),len(entries),len(uids),h_ok,p_ok,'OK',run_id))
-            self.events.put(('refresh',f'Atlas {kid} terminé : {len(uids)} joueurs'))
+            self.events.put(('refresh',f'Atlas {kid} complete: {len(uids)} players'))
         except Exception as e:
-            self.log(f'Import Atlas interrompu: {e}')
+            self.log(f'Atlas Import interrupted: {e}')
             if run_id:
                 with self.db.lock,self.db.conn:self.db.conn.execute('UPDATE atlas_sync_runs SET finished_at=?,status=? WHERE id=?',(now(),'ERROR',run_id))
         finally:self.atlas_busy=False
@@ -1448,28 +1532,36 @@ class App:
             sid=f'live_{kid}_{datetime.now().strftime("%Y%m%d_%H%M%S")}'; self.engine.reset(sid); self.engine.set_protocol_discovery(False); self.session_id=sid; self.capture_path=SESSIONS_DIR/f'{sid}.pcap'; self.db.start_session(sid,'live',str(self.capture_path))
             try:self.live.start('AUTO',self.capture_path)
             except Exception as e:messagebox.showerror('Capture WOS',str(e));return
-        self.btn_stop.config(state='normal'); self.status.set(f'Consolidation LIVE active — {n} joueurs à enrichir'); self.log(f'Consolidation LIVE État {kid}: {n} joueurs en attente. Ouvre simplement le classement WOS. V4.0.10 utilise les affiliations Atlas déjà importées comme ancrage et ne doit plus exiger l’ouverture alliance par alliance.')
+        self.btn_stop.config(state='normal'); self.status.set(f'LIVE Consolidation active — {n} players to enrich'); self.log(f'LIVE Consolidation State {kid}: {n} players pending. Simply open the WOS ranking. V4.0.10 uses the already imported Atlas affiliations as an anchor and no longer requires opening alliance by alliance.')
     def start_map_discovery(self):
         kid=self.get_kid()
         if kid is None:return
         self.db.active_kid=kid
         if self.live.running:
-            messagebox.showwarning('Découverte CARTE','Arrête d’abord la capture en cours avant de lancer un test carte.'); return
+            messagebox.showwarning('Map Discovery','Stop the current capture before starting a map scan.'); return
         sid=f'map_{kid}_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
         self.engine.reset(sid); self.engine.set_protocol_discovery(True); self.session_id=sid
         self.capture_path=SESSIONS_DIR/f'{sid}.pcap'; self.db.start_session(sid,'map-discovery',str(self.capture_path))
         try:self.live.start('AUTO',self.capture_path)
         except Exception as e:
             self.engine.set_protocol_discovery(False); messagebox.showerror('Capture WOS',str(e)); return
-        self.btn_stop.config(state='normal'); self.status.set('Découverte CARTE active — capture exhaustive des opcodes WOS')
-        self.log('Découverte CARTE : reste 5–10 s immobile, déplace la carte plusieurs fois, fais un zoom/dézoom, sans ouvrir ville/profil/alliance/classement, puis Arrêter capture.')
+        self.btn_stop.config(state='normal'); self.status.set('Map Discovery active — exhaustive WOS opcode capture')
+        self.log('Map Discovery: stay still 5-10s, drag the map several times, zoom in/out, without opening city/profile/alliance/ranking. Then Stop Capture.')
 
     def stop_live(self):
         if self.live.running:self.live.stop(); self.engine.finalize_session(); self.db.stop_session(self.session_id,self.engine.stats_data)
         self.engine.set_protocol_discovery(False)
-        self.btn_stop.config(state='disabled'); self.status.set('Capture WOS arrêtée'); self.refresh()
+        self.btn_stop.config(state='disabled'); self.status.set('WOS Capture stopped'); self.refresh()
     def refresh(self):
         kid=self.get_kid()
+        # Update alliance dropdown
+        if kid is not None:
+            with self.db.lock:
+                tags = [r[0] for r in self.db.conn.execute('SELECT DISTINCT alliance_tag FROM players WHERE kid=? AND alliance_tag IS NOT NULL AND alliance_tag!="" ORDER BY alliance_tag', (kid,)).fetchall()]
+                current = self.db_alliance_combo.cget('values')
+                if list(current) != [''] + tags:
+                    self.db_alliance_combo.configure(values=[''] + tags)
+
         if kid is None:return
         st=self.db.atlas_stats(kid)
         for k in ['alliances','players','atlas_power','wos','wos_power']: self.svars[k].set(str(st[k]))
@@ -1483,14 +1575,14 @@ class App:
         kid=self.get_kid()
         if kid is None:return
         f=filedialog.asksaveasfilename(initialdir=str(EXPORT_DIR),initialfile=f'WOS_Unified_{kid}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',defaultextension='.csv',filetypes=[('CSV','*.csv')])
-        if f:self.db.export_unified_csv(kid,Path(f)); self.status.set(f'CSV exporté : {f}')
+        if f:self.db.export_unified_csv(kid,Path(f)); self.status.set(f'CSV exported : {f}')
     def build_diagnostic_report(self):
         kid=self.get_kid()
-        if kid is None:return 'État invalide.'
+        if kid is None:return 'Invalid State.'
         st=self.db.atlas_stats(kid); pending=self.db.pending_count(kid)
-        lines=[f'WOS Unified Manager V{APP_VERSION} — Rapport diagnostic',f'État: {kid}',f'Base persistante: {DB_PATH}','',
-               '=== ATLAS ===',f"Alliances: {st['alliances']}",f"Joueurs: {st['players']}",f"Power Atlas: {st['atlas_power']}",'',
-               '=== WOS ===',f"WOS ID vérifiés/connus: {st['wos']}",f"Power WOS: {st['wos_power']}",f"En attente consolidation: {pending}",'']
+        lines=[f'WOS Unified Manager V{APP_VERSION} — Diagnostic Report',f'State: {kid}',f'Persistent DB: {DB_PATH}','',
+               '=== ATLAS ===',f"Alliances: {st['alliances']}",f"Players: {st['players']}",f"Power Atlas: {st['atlas_power']}",'',
+               '=== WOS ===',f"Verified/known WOS IDs: {st['wos']}",f"Power WOS: {st['wos_power']}",f"Pending consolidation: {pending}",'']
         with self.db.lock:
             # V4.0.20: re-opening the SAME alliance roster shows the decoder
             # the exact same bytes it already saw -- past the 2-confirmation
@@ -1510,23 +1602,23 @@ class App:
                 LIMIT 15
             """,(kid,)).fetchall()
             if cov:
-                lines += ['=== ALLIANCES LES MOINS COUVERTES (ouvre celles-ci en priorité) ===']
+                lines += ['=== LEAST COVERED ALLIANCES (open these first) ===']
                 for r in cov:
-                    lines.append(f"[{r['tag'] or '?'}] {r['verified']}/{r['official'] if r['official'] is not None else '?'} membres officiels vérifiés (connus en base: {r['known']})")
+                    lines.append(f"[{r['tag'] or '?'}] {r['verified']}/{r['official'] if r['official'] is not None else '?'} verified official members (connus en base: {r['known']})")
                 lines += ['']
             sr=self.db.conn.execute("SELECT session_id,started_at,stopped_at,frames_7502,req_7902,req_7d02,member_blocks,roster_count FROM sessions ORDER BY rowid DESC LIMIT 1").fetchone()
             if sr:
-                lines += ['=== DERNIÈRE SESSION LIVE ===']
+                lines += ['=== LAST LIVE SESSION ===']
                 live_stats=dict(getattr(self.engine,'stats_data',{}) or {}) if self.live.running and sr['session_id']==self.session_id else {}
                 for k in sr.keys():
                     v=live_stats.get(k,sr[k]) if k in ('frames_7502','req_7902','req_7d02','member_blocks','roster_count') else sr[k]
                     lines.append(f'{k}: {v}')
-                if self.live.running: lines.append('capture_active: True (compteurs LIVE, sans attendre Arrêter capture)')
+                if self.live.running: lines.append('capture_active: True (LIVE counters, without waiting for Stop Capture)')
                 lines += ['']
             rows=self.db.conn.execute("""SELECT p.atlas_id,p.pseudo_display,p.alliance_tag,p.wos_id,p.power,p.atlas_power
                 FROM players p WHERE p.kid=? AND (p.wos_id IS NULL OR p.power IS NULL)
                 ORDER BY COALESCE(p.atlas_power,0) DESC LIMIT 50""",(kid,)).fetchall()
-            lines += [f'=== 50 PREMIERS NON CONSOLIDÉS ({len(rows)} affichés) ===']
+            lines += [f'=== FIRST 50 NOT CONSOLIDATED ({len(rows)} shown) ===']
             for r in rows:
                 lines.append(f"A:{r['atlas_id']} | {r['pseudo_display'] or '?'} | [{r['alliance_tag'] or '?'}] | W:{r['wos_id'] or '?'} | PWOS:{r['power'] or '?'} | PATLAS:{r['atlas_power'] or '?'}")
             lines += ['']
@@ -1555,22 +1647,22 @@ class App:
                     WHERE p.kid=? AND p.wos_id IS NULL
                 """,(kid,)).fetchone()[0]
                 awaiting=max(0,not_verified-conflicted)
-                lines += ['=== IDENTITÉ (état actuel, pas un historique d\'événements) ===',
-                          f'VERIFIED (WOS ID confirmé): {verified}',
-                          f'EN CONFLIT (candidature contestée, pas encore tranchée): {conflicted}',
+                lines += ['=== IDENTITY (current state, not an event history) ===',
+                          f'VERIFIED (WOS ID confirmed): {verified}',
+                          f'IN CONFLICT (contested candidacy, not yet resolved): {conflicted}',
                           f'EN ATTENTE (pas encore assez d\'observations): {awaiting}','']
-            except Exception as e: lines += [f'Identité: indisponible ({e})','']
+            except Exception as e: lines += [f'Identity: unavailable ({e})','']
             try:
                 sid = sr['session_id'] if sr else self.session_id
                 raw_total=self.db.conn.execute("SELECT COUNT(*) FROM protocol_raw_events WHERE session_id=?",(sid,)).fetchone()[0]
                 if raw_total:
-                    lines += ['=== DÉCOUVERTE PROTOCOLE EXHAUSTIVE ===',f'Trames WOS réassemblées sauvegardées: {raw_total}']
+                    lines += ['=== EXHAUSTIVE PROTOCOL DISCOVERY ===',f'Saved reassembled WOS frames: {raw_total}']
                     hist=self.db.conn.execute("SELECT direction,opcode,COUNT(*) n,MIN(frame_len) min_len,MAX(frame_len) max_len,CAST(AVG(frame_len) AS INT) avg_len FROM protocol_raw_events WHERE session_id=? GROUP BY direction,opcode ORDER BY n DESC,direction,opcode",(sid,)).fetchall()
                     known={'7d02','5d02','7502','5502','7902','5902'}
                     for r in hist:
                         flag='CONNU' if (r['opcode'] or '').lower() in known else 'NOUVEAU'
                         lines.append(f"{r['direction']} | opcode={r['opcode']} | n={r['n']} | len={r['min_len']}..{r['max_len']} avg={r['avg_len']} | {flag}")
-                    lines.append('--- ÉCHANTILLONS OPCODES NON CONNUS ---')
+                    lines.append('--- UNKNOWN OPCODE SAMPLES ---')
                     unknown=self.db.conn.execute("SELECT opcode,direction,COUNT(*) n FROM protocol_raw_events WHERE session_id=? AND LOWER(opcode) NOT IN ('7d02','5d02','7502','5502','7902','5902') GROUP BY opcode,direction ORDER BY n DESC LIMIT 30",(sid,)).fetchall()
                     if not unknown:
                         lines.append('Aucun opcode inconnu dans cette session.')
@@ -1579,14 +1671,14 @@ class App:
                         lines.append(f"OPCODE {u['opcode']} {u['direction']} n={u['n']}")
                         for x in samples:
                             hx=x['payload_hex'] or ''
-                            shown=hx if len(hx)<=500 else hx[:500]+'...<tronqué>'
+                            shown=hx if len(hx)<=500 else hx[:500]+'...<truncated>'
                             lines.append(f"  {x['seen_at']} len={x['frame_len']} hex={shown}")
-                    lines.append('--- ÉCHANTILLONS BRUTS CARTE (S>C 7D02 / 7902) ---')
+                    lines.append('--- RAW MAP SAMPLES (S>C 7D02 / 7902) ---')
                     map_rows=self.db.conn.execute("""SELECT id,seen_at,opcode,frame_len,payload_hex
                         FROM protocol_raw_events WHERE session_id=? AND direction='S>C' AND LOWER(opcode) IN ('7d02','5d02','7902','5902')
                         ORDER BY frame_len DESC,id LIMIT 20""",(sid,)).fetchall()
                     if not map_rows:
-                        lines.append('Aucune grosse réponse carte sauvegardée dans cette session.')
+                        lines.append('No large map response saved in this session.')
                     for x in map_rows:
                         hx=x['payload_hex'] or ''
                         # V4.0.14: deliberately keep the FULL hex. This diagnostic is for reverse engineering,
@@ -1603,19 +1695,19 @@ class App:
                             lines.append(f"  NEXT id={y['id']} {y['seen_at']} {y['direction']} opcode={y['opcode']} len={y['frame_len']} hex={y['payload_hex'] or ''}")
                     lines += ['']
             except Exception as e:
-                lines += [f'Découverte protocole: indisponible ({e})','']
+                lines += [f'Discovery protocole: indisponible ({e})','']
             try:
                 ms,mrows=self.db.map_session_stats(sid)
-                lines += ['=== DÉCODEUR MAP V4.0.15 ===',
-                          f"Blocs ancrés Atlas: {ms.get('n',0)} | joueurs uniques: {ms.get('players',0)} | ancres Atlas-ID strictes: {ms.get('atlas_id_anchors',0)} | candidats WOS: {ms.get('wos_candidates',0)} | paires structurelles valides: {ms.get('pair_valid',0)}"]
+                lines += ['=== MAP DECODER V4.0.15 ===',
+                          f"Anchored Atlas Blocks: {ms.get('n',0)} | unique players: {ms.get('players',0)} | strict Atlas-ID anchors: {ms.get('atlas_id_anchors',0)} | candidates WOS: {ms.get('wos_candidates',0)} | paires structurelles valides: {ms.get('pair_valid',0)}"]
                 if not mrows:
-                    lines.append('Aucun bloc MAP ancré dans cette session.')
+                    lines.append('No MAP block anchored in this session.')
                 else:
                     for r in mrows:
                         lines.append(f"MAP A:{r.get('atlas_id')} | {r.get('pseudo_display') or '?'} [{r.get('alliance_tag') or '?'}] | XY:{r.get('atlas_x')},{r.get('atlas_y')} | anchor={r.get('anchor_kind')} | decA={r.get('decoded_atlas_id') or '?'} Wcand={r.get('decoded_wos_id') or '?'} Pcand={r.get('decoded_power') or '?'} conf={r.get('wos_confidence') or '?'} pair={r.get('pair_valid')} | x{r.get('sightings')}")
                 lines.append('')
             except Exception as e:
-                lines += [f'Décodeur MAP: indisponible ({e})','']
+                lines += [f'MAP Decoder: unavailable ({e})','']
             try:
                 sid = sr['session_id'] if sr else self.session_id
                 txrows=self.db.conn.execute("SELECT rowid,seen_at,direction,opcode,payload_hex,note FROM protocol_events WHERE session_id=? AND opcode IN ('7d02','5d02','7502','5502') ORDER BY rowid",(sid,)).fetchall()
@@ -1642,8 +1734,8 @@ class App:
                             resp_by_ctr.setdefault(counter.hex(),[]).append((r,raw))
                         raw_responses.append((r,counter,raw))
                 lines += ['=== DIAGNOSTIC TRANSACTIONS 7D02/7502 ===',
-                          f'7D02 session: {req_total} | cibles Atlas décodées: {req_targets}',
-                          f'7502 sauvegardées: {resp_total} | compteurs décodés: {resp_counters}']
+                          f'7D02 session: {req_total} | decoded Atlas targets: {req_targets}',
+                          f'7502 saved: {resp_total} | decoded counters: {resp_counters}']
                 targeted=[]
                 for ctr,items in req_by_ctr.items():
                     for rr,target,reqraw in items:
@@ -1654,11 +1746,11 @@ class App:
                             lines.append(f"  RSP {rsp['seen_at']} len={len(raw)} note={rsp['note'] or ''} hex={raw.hex()}")
                         targeted.append((target,ctr))
                 if not targeted:
-                    lines.append('Aucune paire ciblée complète dans cette session.')
+                    lines.append('No complete targeted pair in this session.')
                 # V4.0.11: expose raw request/response pairs even when the Atlas target decoder
                 # does not understand this 7D02 variant. The transaction counter itself is
                 # authoritative for pairing and lets us reverse-engineer the target encoding.
-                lines.append('--- PAIRES BRUTES 7D02 -> 7502 (même compteur) ---')
+                lines.append('--- RAW PAIRS 7D02 -> 7502 (same counter) ---')
                 pair_count=0
                 for ctr,items in req_by_ctr.items():
                     responses=resp_by_ctr.get(ctr,[])
@@ -1674,30 +1766,66 @@ class App:
                             break
                     if pair_count >= 80:
                         break
-                lines.append(f'Paires compteur exact affichées: {pair_count}')
+                lines.append(f'Exact counter pairs shown: {pair_count}')
                 if pair_count == 0:
                     lines.append('Aucune paire par compteur dans cette session.')
                 # Always expose a few raw responses too, even if the counter decoder fails.
-                lines.append('--- ÉCHANTILLON 7502 BRUTES ---')
+                lines.append('--- RAW 7502 SAMPLES ---')
                 for r,counter,raw in raw_responses[-12:]:
                     lines.append(f"RSP {r['seen_at']} len={len(raw)} ctr={counter.hex() if counter else '?'} note={r['note'] or ''} hex={raw.hex()}")
                 lines += ['']
             except Exception as e: lines += [f'Transactions: indisponibles ({e})','']
             try:
                 ev=self.db.conn.execute("SELECT seen_at,direction,opcode,note FROM protocol_events ORDER BY rowid DESC LIMIT 120").fetchall()
-                lines += ['=== 120 DERNIERS ÉVÉNEMENTS PROTOCOLE ===']
+                lines += ['=== LAST 120 PROTOCOL EVENTS ===']
                 for r in reversed(ev): lines.append(f"{r['seen_at']} | {r['direction']} | {r['opcode']} | {r['note'] or ''}")
-            except Exception as e: lines += [f'Événements: indisponibles ({e})']
+            except Exception as e: lines += [f'Events: unavailable ({e})']
         return '\n'.join(lines)
     def show_diagnostic_report(self):
         report=self.build_diagnostic_report()
-        win=tk.Toplevel(self.root); win.title('Rapport diagnostic copiable'); win.geometry('1050x750')
+        win=tk.Toplevel(self.root); win.title('Diagnostic Report copiable'); win.geometry('1050x750')
         txt=tk.Text(win,wrap='none'); txt.pack(fill='both',expand=True,padx=8,pady=8); txt.insert('1.0',report)
         bar=ttk.Frame(win); bar.pack(fill='x',padx=8,pady=(0,8))
         def copy_all():
-            self.root.clipboard_clear(); self.root.clipboard_append(report); self.log('Rapport diagnostic copié dans le presse-papiers.')
-        ttk.Button(bar,text='Copier tout',command=copy_all).pack(side='left')
-        ttk.Button(bar,text='Fermer',command=win.destroy).pack(side='right')
+            self.root.clipboard_clear(); self.root.clipboard_append(report); self.log('Diagnostic Report copied to clipboard.')
+        ttk.Button(bar,text='Copy All',command=copy_all).pack(side='left')
+        ttk.Button(bar,text='Close',command=win.destroy).pack(side='right')
+
+
+
+    def _on_lang_change(self, event=None):
+        val = self._lang_var.get().lower()
+        self.nav_config['lang'] = val
+        self._save_nav_config()
+        self.log(f"Language set to '{val.upper()}'. Restart the app to apply.")
+        from tkinter import messagebox as _mb
+        _mb.showinfo("Language Changed", f"Language set to {val.upper()}.\nRestart WOS Extract to apply the change.")
+
+    def reset_everything(self):
+        if messagebox.askyesno("Confirm Reset", "Are you sure you want to completely erase all players, alliances, and collected data? The application will close after resetting."):
+            try:
+                # Stop any active captures
+                self.stop_live()
+                
+                # Close DB
+                if hasattr(self, 'db') and self.db:
+                    self.db.conn.close()
+                
+                # Delete files
+                import os, pathlib
+                db_dir = pathlib.Path(os.environ.get('LOCALAPPDATA', pathlib.Path.home()/'AppData'/'Local')) / 'WOS_Unified_Manager' / 'data'
+                for suffix in ['', '-wal', '-shm']:
+                    f = db_dir / f'wos_unified.sqlite3{suffix}'
+                    if f.exists():
+                        try:
+                            f.unlink()
+                        except Exception as e:
+                            self.log(f"Warning: Could not delete {f}: {e}")
+                
+                messagebox.showinfo("Reset Complete", "All data has been erased. The application will now close. Please restart it.")
+                self.root.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to reset: {e}")
 
     def export_diagnostic(self):
         kid=self.get_kid()
@@ -1711,16 +1839,16 @@ class App:
         try:
             if tmp.exists(): shutil.rmtree(tmp)
             tmp.mkdir(parents=True)
-            # Snapshot SQLite cohérent, même si l'application continue à tourner.
+            # Consistent SQLite snapshot, even if the application keeps running.
             snap=tmp/'wos_unified.sqlite3'
             import sqlite3
             with self.db.lock:
                 dst=sqlite3.connect(str(snap)); self.db.conn.backup(dst); dst.close()
-            # Export joueurs de l'État sans dialogue supplémentaire.
+            # Export State players without extra dialog.
             self.db.export_unified_csv(kid,tmp/f'WOS_Unified_{kid}.csv')
-            # Journal visible: utile même si le PCAP n'est pas transférable.
+            # Visible log: useful even if the PCAP is not transferable.
             (tmp/'journal.txt').write_text(self.logbox.get('1.0','end-1c'),encoding='utf-8')
-            # Résumé machine + session + compteurs, sans cookies/token Atlas.
+            # Machine + session + counters summary, without Atlas cookies/token.
             st=self.db.atlas_stats(kid)
             with self.db.lock:
                 sessions=[dict(r) for r in self.db.conn.execute('SELECT * FROM sessions ORDER BY started_at DESC LIMIT 10')]
@@ -1731,7 +1859,7 @@ class App:
                 except Exception: pass
             summary={'app_version':APP_VERSION,'created_at':now(),'kid':kid,'stats':st,'pending':pending,'active_session_id':self.session_id or None,'capture_path':str(self.capture_path) if self.capture_path else None,'live_running':bool(self.live.running),'engine_stats':dict(getattr(self.engine,'stats_data',{}) or {}),'sessions':sessions,'atlas_sync_runs':syncs,'identity_conflicts':conflicts,'python':sys.version,'platform':platform.platform()}
             (tmp/'diagnostic.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2,default=str),encoding='utf-8')
-            # Inclure le PCAP de la session active/dernière s'il existe réellement.
+            # Include the PCAP of the active/last session if it really exists.
             pcap=None
             if self.capture_path and Path(self.capture_path).exists(): pcap=Path(self.capture_path)
             elif sessions:
@@ -1740,14 +1868,14 @@ class App:
             if pcap: shutil.copy2(pcap,tmp/pcap.name)
             # Petit manifeste lisible.
             files_note=['diagnostic.json','journal.txt','wos_unified.sqlite3',f'WOS_Unified_{kid}.csv'] + ([pcap.name] if pcap else [])
-            (tmp/'README_DIAGNOSTIC.txt').write_text('WOS Unified Manager diagnostic V'+APP_VERSION+'\nEtat: '+str(kid)+'\n\nFichiers:\n- '+'\n- '.join(files_note)+'\n\nSécurité: les cookies wos_at / wos_rt ne sont jamais inclus dans cet export.\n',encoding='utf-8')
+            (tmp/'README_DIAGNOSTIC.txt').write_text('WOS Unified Manager diagnostic V'+APP_VERSION+'\nState: '+str(kid)+'\n\nFiles:\n- '+'\n- '.join(files_note)+'\n\nSécurité: les cookies wos_at / wos_rt ne sont jamais inclus dans cet export.\n',encoding='utf-8')
             with zipfile.ZipFile(target,'w',zipfile.ZIP_DEFLATED) as z:
                 for f in tmp.iterdir(): z.write(f,arcname=f.name)
-            self.status.set(f'Diagnostic exporté : {target}')
-            self.log(f'Export diagnostic créé: {target.name}'+(' (PCAP inclus)' if pcap else ' (aucun PCAP disponible)'))
-            messagebox.showinfo('Diagnostic créé',f'Archive créée :\n{target}\n\nTu peux me transmettre uniquement ce ZIP.')
+            self.status.set(f'Diagnostic exported : {target}')
+            self.log(f'Diagnostic Export created: {target.name}'+(' (PCAP included)' if pcap else ' (no PCAP available)'))
+            messagebox.showinfo('Diagnostic created',f'Archive created:\n{target}\n\nYou can send me just this ZIP file.')
         except Exception as e:
-            self.log(f'Erreur export diagnostic: {e}'); messagebox.showerror('Export diagnostic',str(e))
+            self.log(f'Diagnostic export error: {e}'); messagebox.showerror('Diagnostic Export',str(e))
         finally:
             try:
                 if tmp.exists(): shutil.rmtree(tmp)

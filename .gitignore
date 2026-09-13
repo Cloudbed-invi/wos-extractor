@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3*
+*.pcap
+*.log
+atlas_cookies.txt
+WOS_Unified_Data/
+WOS_State_Collector_Data/
+sessions/
+exports/
+diagnostics/
+.system_generated/
