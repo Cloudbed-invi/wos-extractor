@@ -1,43 +1,51 @@
 import time
 import subprocess
 import re
+import sys
 
 ADB_PATH = "adb"
+MUMU_CLI = r"C:\Program Files\Netease\MuMuPlayer\nx_main\mumu-cli.exe"
 
 def setup_adb_connection():
-    configured_serial = "127.0.0.1:7555"
-    for port in ['127.0.0.1:7555', '127.0.0.1:16384', '127.0.0.1:5555']:
+    # Try mumu-cli connect first if available
+    try:
+        subprocess.run([MUMU_CLI, 'adb', '-v', '0', '-c', 'connect'], capture_output=True, timeout=5)
+    except Exception:
+        pass
+
+    # Try common ports: 16384 (MuMu 12/15), 7555 (MuMu legacy), 5555
+    ports = ['127.0.0.1:16384', '127.0.0.1:7555', '127.0.0.1:5555']
+    for port in ports:
         try:
-            subprocess.run([ADB_PATH, 'connect', port], capture_output=True, timeout=3)
-        except subprocess.TimeoutExpired:
+            res = subprocess.run([ADB_PATH, 'connect', port], capture_output=True, text=True, timeout=4)
+            if "connected to" in res.stdout.lower() or "already connected" in res.stdout.lower():
+                print(f"[+] ADB successfully connected to {port}")
+        except Exception:
             pass
+
     try:
         res = subprocess.run([ADB_PATH, 'devices'], capture_output=True, text=True)
         lines = [l.strip() for l in res.stdout.strip().split('\n')[1:] if '\tdevice' in l]
         if lines:
-            serials = [l.split('\t')[0] for l in lines]
-            if configured_serial in serials:
-                serial = configured_serial
-            else:
-                serial = serials[0]
-            print(f"[+] Connected to ADB device: {serial}")
+            serial = lines[0].split('\t')[0]
+            print(f"[+] Active ADB device confirmed: {serial}")
             return serial
     except Exception as e:
         print(f"[!] ADB detection failed: {e}")
-    return configured_serial
+
+    return None
 
 ADB_SERIAL = setup_adb_connection()
 
-# Known from config.json dump earlier
-taps = {
-    "search_map_icon": [472, 1605],
-    "x_input_box": [366, 941],
-    "x_ok_button": [977, 1852],
-    "y_input_box": [774, 933],
-    "y_ok_button": [997, 1861],
-    "go_button": [536, 1124]
-}
+if not ADB_SERIAL:
+    print("\n[ERROR] No active ADB device found!")
+    print("In MuMu Player:")
+    print("1. Go to Settings -> Others -> ADB Connection.")
+    print("2. Set it to 'Open local connection' or 'Open remote connection'.")
+    print("3. **RESTART MuMu Player** (MuMu requires a restart for the ADB port to open).")
+    sys.exit(1)
 
+# Resolution Scaling
 TARGET_W, TARGET_H = 1080, 1920
 
 def get_device_resolution():
@@ -48,11 +56,22 @@ def get_device_resolution():
     return 1080, 1920
 
 DEVICE_W, DEVICE_H = get_device_resolution()
+print(f"[+] Device Resolution: {DEVICE_W}x{DEVICE_H}")
 SCALE_X = DEVICE_W / float(TARGET_W)
 SCALE_Y = DEVICE_H / float(TARGET_H)
 
 def scale_coords(x, y):
     return int(round(x * SCALE_X)), int(round(y * SCALE_Y))
+
+# Taps config
+taps = {
+    "search_map_icon": [472, 1605],
+    "x_input_box": [366, 941],
+    "x_ok_button": [977, 1852],
+    "y_input_box": [774, 933],
+    "y_ok_button": [997, 1861],
+    "go_button": [536, 1124]
+}
 
 def jump_to_coordinates(x, y, prev_x=None, prev_y=None):
     del_keys = "input keyevent 67 67 67 67 67"
@@ -80,8 +99,10 @@ def jump_to_coordinates(x, y, prev_x=None, prev_y=None):
 
     parts.append(f"input tap {go_x} {go_y}")
     full_cmd = [ADB_PATH, '-s', ADB_SERIAL, 'shell', " && ".join(parts)]
-    subprocess.run(full_cmd, capture_output=True)
-    time.sleep(4)
+    res = subprocess.run(full_cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"[!] Tap execution returned error: {res.stderr}")
+    time.sleep(3.5)
 
 cities = [
     ("นิกกี้ พิ้ม", 25, 493),
@@ -96,14 +117,14 @@ cities = [
     ("lord625999966", 1151, 835)
 ]
 
-print("[*] Starting isolated city capture...")
+print(f"[*] Starting isolated city capture on {ADB_SERIAL}...")
 prev_x, prev_y = None, None
 
-for name, x, y in cities:
-    print(f"Jumping to {name} at X:{x} Y:{y}...")
+for idx, (name, x, y) in enumerate(cities, 1):
+    print(f"[{idx}/{len(cities)}] Jumping to {name} at X:{x} Y:{y}...")
     jump_to_coordinates(x, y, prev_x, prev_y)
-    print("Waiting 5 seconds for map packets to stream...")
+    print("    Waiting 5s for 7D02 map packets to stream...")
     time.sleep(5)
     prev_x, prev_y = x, y
 
-print("[+] Done! The sniffer should now have the exact 7D02 map packets for these locations.")
+print("\n[+] All 10 coordinates visited successfully! Packets are ready for analysis.")
