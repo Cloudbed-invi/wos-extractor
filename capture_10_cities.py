@@ -6,23 +6,47 @@ import sys
 ADB_PATH = "adb"
 MUMU_CLI = r"C:\Program Files\Netease\MuMuPlayer\nx_main\mumu-cli.exe"
 
-def setup_adb_connection():
-    # Try mumu-cli connect first if available
+def get_mumu_bridge_ip():
     try:
-        subprocess.run([MUMU_CLI, 'adb', '-v', '0', '-c', 'connect'], capture_output=True, timeout=5)
+        res = subprocess.run([MUMU_CLI, 'sh', '-v', '0', '-c', 'ip -4 addr'], capture_output=True, text=True, timeout=5)
+        for line in res.stdout.splitlines():
+            if "inet " in line and not "127.0.0.1" in line:
+                match = re.search(r'inet\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', line)
+                if match:
+                    return match.group(1)
+    except Exception:
+        pass
+    return None
+
+def setup_adb_connection():
+    # 1. Check if already connected
+    try:
+        res = subprocess.run([ADB_PATH, 'devices'], capture_output=True, text=True)
+        lines = [l.strip() for l in res.stdout.strip().split('\n')[1:] if '\tdevice' in l]
+        if lines:
+            serial = lines[0].split('\t')[0]
+            print(f"[+] Active ADB device confirmed: {serial}")
+            return serial
     except Exception:
         pass
 
-    # Try common ports: 16384 (MuMu 12/15), 7555 (MuMu legacy), 5555
-    ports = ['127.0.0.1:16384', '127.0.0.1:7555', '127.0.0.1:5555']
-    for port in ports:
+    # 2. Check if MuMu bridge IP can be resolved
+    bridge_ip = get_mumu_bridge_ip()
+    candidates = []
+    if bridge_ip:
+        candidates.append(f"{bridge_ip}:5555")
+
+    candidates += ['127.0.0.1:16384', '127.0.0.1:7555', '127.0.0.1:5555']
+
+    for target in candidates:
         try:
-            res = subprocess.run([ADB_PATH, 'connect', port], capture_output=True, text=True, timeout=4)
+            res = subprocess.run([ADB_PATH, 'connect', target], capture_output=True, text=True, timeout=4)
             if "connected to" in res.stdout.lower() or "already connected" in res.stdout.lower():
-                print(f"[+] ADB successfully connected to {port}")
+                print(f"[+] ADB connected to {target}")
         except Exception:
             pass
 
+    # Re-check active devices
     try:
         res = subprocess.run([ADB_PATH, 'devices'], capture_output=True, text=True)
         lines = [l.strip() for l in res.stdout.strip().split('\n')[1:] if '\tdevice' in l]
@@ -39,10 +63,6 @@ ADB_SERIAL = setup_adb_connection()
 
 if not ADB_SERIAL:
     print("\n[ERROR] No active ADB device found!")
-    print("In MuMu Player:")
-    print("1. Go to Settings -> Others -> ADB Connection.")
-    print("2. Set it to 'Open local connection' or 'Open remote connection'.")
-    print("3. **RESTART MuMu Player** (MuMu requires a restart for the ADB port to open).")
     sys.exit(1)
 
 # Resolution Scaling
@@ -53,7 +73,7 @@ def get_device_resolution():
     match = re.search(r'(\d+)x(\d+)', res.stdout)
     if match:
         return int(match.group(1)), int(match.group(2))
-    return 1080, 1920
+    return 720, 1280
 
 DEVICE_W, DEVICE_H = get_device_resolution()
 print(f"[+] Device Resolution: {DEVICE_W}x{DEVICE_H}")
@@ -63,7 +83,7 @@ SCALE_Y = DEVICE_H / float(TARGET_H)
 def scale_coords(x, y):
     return int(round(x * SCALE_X)), int(round(y * SCALE_Y))
 
-# Taps config
+# Taps config (based on 1080x1920 base)
 taps = {
     "search_map_icon": [472, 1605],
     "x_input_box": [366, 941],
@@ -117,7 +137,7 @@ cities = [
     ("lord625999966", 1151, 835)
 ]
 
-print(f"[*] Starting isolated city capture on {ADB_SERIAL}...")
+print(f"\n[*] Starting isolated city capture on {ADB_SERIAL}...")
 prev_x, prev_y = None, None
 
 for idx, (name, x, y) in enumerate(cities, 1):
