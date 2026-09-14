@@ -3128,7 +3128,7 @@ class CollectorEngine:
         if len(frame) < 500:
             return
         self.stats_data["map_frames"] = self.stats_data.get("map_frames",0)+1
-        starts=[m.start() for m in re.finditer(b"\xda\x1c", frame)]
+        starts=[m.start() for m in re.finditer(b"\\xda\\x1c|\\xdc\\x1c", frame)]
         if not starts:
             return
         resolver=getattr(self.db,"map_resolve_anchor",None)
