@@ -3155,7 +3155,40 @@ class CollectorEngine:
             except Exception:
                 anchor=None
             if not anchor:
-                continue
+                decoded_atlas=None
+                try: decoded_atlas=int(row.get("atlas_id")) if row.get("atlas_id") not in (None,"") else None
+                except Exception: pass
+                if decoded_atlas:
+                    anchor = {"atlas_id": decoded_atlas, "pseudo_display": row.get("pseudo_display"), "alliance_tag": row.get("alliance_tag"), "anchor_kind": "unlocked-discovery"}
+                else:
+                    continue
+
+            # --- Live coordinate extraction (Antigravity patch) ---
+            v_idx = 0
+            last_x, last_y = None, None
+            while True:
+                v_idx = frame.find(b'\x44\x06\x02\x1f', v_idx)
+                if v_idx == -1 or v_idx > st: break
+                try:
+                    val, shift = 0, 0
+                    p = v_idx + 4
+                    while True:
+                        b = frame[p]; val |= (b & 0x7f) << shift; p += 1; shift += 7
+                        if not (b & 0x80): break
+                    cx = val
+                    val, shift = 0, 0
+                    while True:
+                        b = frame[p]; val |= (b & 0x7f) << shift; p += 1; shift += 7
+                        if not (b & 0x80): break
+                    cy = val
+                    if 1 <= cx <= 1500 and 1 <= cy <= 1500:
+                        last_x, last_y = cx, cy
+                except: pass
+                v_idx += 4
+            if last_x and last_y:
+                anchor['atlas_x'] = last_x
+                anchor['atlas_y'] = last_y
+
             atlas=int(anchor["atlas_id"])
             k=(atlas,st)
             if k in seen_local:
@@ -3203,34 +3236,6 @@ class CollectorEngine:
                 anchored["power_confidence"]="map-field-unverified"
                 self._store_row(anchored,"map-7d02-atlas-anchored")
 
-            # --- Live coordinate extraction (Antigravity patch) ---
-            # Removed buggy _extract_map_xy heuristic that was corrupting DB coordinates.
-            # Find closest preceding 44 06 02 1f for chunk coordinate
-            v_idx = 0
-            last_x, last_y = None, None
-            while True:
-                v_idx = frame.find(b'\x44\x06\x02\x1f', v_idx)
-                if v_idx == -1 or v_idx > st: break
-                try:
-                    val, shift = 0, 0
-                    p = v_idx + 4
-                    while True:
-                        b = frame[p]; val |= (b & 0x7f) << shift; p += 1; shift += 7
-                        if not (b & 0x80): break
-                    cx = val
-                    val, shift = 0, 0
-                    while True:
-                        b = frame[p]; val |= (b & 0x7f) << shift; p += 1; shift += 7
-                        if not (b & 0x80): break
-                    cy = val
-                    if 1 <= cx <= 1500 and 1 <= cy <= 1500:
-                        last_x, last_y = cx, cy
-                except: pass
-                v_idx += 4
-            if last_x and last_y:
-                anchor['atlas_x'] = last_x
-                anchor['atlas_y'] = last_y
-            pass
 
 
 
