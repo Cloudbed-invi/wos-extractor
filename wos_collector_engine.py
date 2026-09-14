@@ -3158,8 +3158,14 @@ class CollectorEngine:
                 decoded_atlas=None
                 try: decoded_atlas=int(row.get("atlas_id")) if row.get("atlas_id") not in (None,"") else None
                 except Exception: pass
+                
+                # UNLOCK CONSERVATIVE MODE: If atlas is missing, use a negative hash of their name!
+                name = row.get("pseudo_display") or row.get("pseudo")
+                if not decoded_atlas and name:
+                    decoded_atlas = -(abs(hash(name)) % 100000000)
+                    
                 if decoded_atlas:
-                    anchor = {"atlas_id": decoded_atlas, "pseudo_display": row.get("pseudo_display"), "alliance_tag": row.get("alliance_tag"), "anchor_kind": "unlocked-discovery"}
+                    anchor = {"atlas_id": decoded_atlas, "pseudo_display": name, "alliance_tag": row.get("alliance_tag"), "anchor_kind": "unlocked-discovery"}
                 else:
                     continue
 
