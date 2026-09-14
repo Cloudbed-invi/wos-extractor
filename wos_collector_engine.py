@@ -3128,7 +3128,7 @@ class CollectorEngine:
         if len(frame) < 500:
             return
         self.stats_data["map_frames"] = self.stats_data.get("map_frames",0)+1
-        starts=[m.start() for m in re.finditer(b"\xdc\x1c", frame)]
+        starts=[m.start() for m in re.finditer(b"\xda\x1c", frame)]
         if not starts:
             return
         resolver=getattr(self.db,"map_resolve_anchor",None)
@@ -3205,6 +3205,31 @@ class CollectorEngine:
 
             # --- Live coordinate extraction (Antigravity patch) ---
             # Removed buggy _extract_map_xy heuristic that was corrupting DB coordinates.
+            # Find closest preceding 44 06 02 1f for chunk coordinate
+            v_idx = 0
+            last_x, last_y = None, None
+            while True:
+                v_idx = frame.find(b'\x44\x06\x02\x1f', v_idx)
+                if v_idx == -1 or v_idx > st: break
+                try:
+                    val, shift = 0, 0
+                    p = v_idx + 4
+                    while True:
+                        b = frame[p]; val |= (b & 0x7f) << shift; p += 1; shift += 7
+                        if not (b & 0x80): break
+                    cx = val
+                    val, shift = 0, 0
+                    while True:
+                        b = frame[p]; val |= (b & 0x7f) << shift; p += 1; shift += 7
+                        if not (b & 0x80): break
+                    cy = val
+                    if 1 <= cx <= 1500 and 1 <= cy <= 1500:
+                        last_x, last_y = cx, cy
+                except: pass
+                v_idx += 4
+            if last_x and last_y:
+                anchor['atlas_x'] = last_x
+                anchor['atlas_y'] = last_y
             pass
 
 
